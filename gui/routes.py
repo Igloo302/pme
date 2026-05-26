@@ -25,6 +25,21 @@ def register_routes(app):
     auto_cleaner_state = {"running": False, "last_check": None, "total_runs": 0}
     
     def start_auto_cleaner():
+        def _has_recent_data(db_path, table, minutes=10):
+            """Check if a database has records written in the last N minutes."""
+            if not db_path or not os.path.exists(os.path.expanduser(db_path)):
+                return False
+            try:
+                conn = sqlite3.connect(os.path.expanduser(db_path))
+                cursor = conn.cursor()
+                cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE timestamp >= ? LIMIT 1", (cutoff,))
+                count = cursor.fetchone()[0]
+                conn.close()
+                return count > 0
+            except Exception:
+                return False
+
         def worker():
             # Wait for Flask server to launch completely
             time.sleep(10)
@@ -33,30 +48,13 @@ def register_routes(app):
                 try:
                     auto_cleaner_state["last_check"] = datetime.now().isoformat()
                     
-                    # Check if Screenpipe is running
-                    sp_running = False
-                    try:
-                        response = req.get(f"{get_sp_api()}/health", headers=get_auth_headers(), timeout=2)
-                        sp_running = (response.status_code == 200)
-                    except Exception:
-                        sp_running = False
+                    # Check for fresh data instead of checking if processes are running
+                    sp_has_data = _has_recent_data(get_sp_db(), "frames", minutes=10)
+                    oc_has_data = _has_recent_data(get_oc_db(), "captures", minutes=10)
                         
-                    # Check if OpenChronicle is running
-                    oc_running = False
-                    try:
-                        result = subprocess.run(
-                            [get_oc_bin(), "status"],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        oc_running = "Active" in result.stdout or "running" in result.stdout.lower()
-                    except Exception:
-                        oc_running = False
-                        
-                    if sp_running and oc_running:
+                    if sp_has_data and oc_has_data:
                         auto_cleaner_state["running"] = True
-                        print("🔄 Auto-cleaner: Both Screenpipe and OpenChronicle are active. Running incremental PME clean...")
+                        print("🔄 Auto-cleaner: Fresh data in both databases. Running incremental PME clean...")
                         from src.cleaner import PMECleaner
                         cleaner = PMECleaner()
                         stats = cleaner.incremental_clean(minutes=30)
@@ -78,10 +76,10 @@ def register_routes(app):
                     else:
                         auto_cleaner_state["running"] = False
                         reason = []
-                        if not sp_running:
-                            reason.append("Screenpipe offline")
-                        if not oc_running:
-                            reason.append("OpenChronicle offline")
+                        if not sp_has_data:
+                            reason.append("No recent Screenpipe data")
+                        if not oc_has_data:
+                            reason.append("No recent OpenChronicle data")
                         log_entry = {
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "status": "skipped",
