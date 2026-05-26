@@ -1,0 +1,66 @@
+# ============================================================
+# PME - Personal Memory Engine
+# Configuration File
+# ============================================================
+# Copy this file to config.yaml and fill in your own paths.
+# All ~ paths are automatically expanded to your home directory.
+
+# --- Database Paths ---
+database:
+  # Where Screenpipe stores its SQLite database
+  screenpipe_db: "~/.screenpipe/db.sqlite"
+
+  # Where OpenChronicle stores its SQLite database
+  openchronicle_db: "~/.openchronicle/index.db"
+
+  # Where PME writes the cleaned, deduplicated output database
+  # This is the file you'll use for RAG / Q&A queries
+  cleaned_db: "~/pme_cleaned_memories.db"
+
+# --- Screenpipe Settings ---
+screenpipe:
+  # HTTP API base URL (default port 3030)
+  api_url: "http://localhost:3030"
+
+  # Full path to the screenpipe binary
+  # Homebrew default: /opt/homebrew/bin/screenpipe
+  bin_path: "/opt/homebrew/bin/screenpipe"
+
+  # Bearer token for API authentication.
+  # Leave empty ("") - PME will auto-read it from ~/.screenpipe/auth_token
+  # or from the SCREENPIPE_API_TOKEN environment variable.
+  api_token: ""
+
+# --- OpenChronicle Settings ---
+openchronicle:
+  # Full path to the openchronicle binary
+  bin_path: "~/.local/bin/openchronicle"
+
+# --- PME Cleaning Policy ---
+# Controls how often OCR snapshots are kept per window state.
+# Smaller values = more records kept; larger values = more aggressive dedup.
+cleaning_policy:
+  # Seconds between captures for the active (focused) window
+  active_interval: 2
+
+  # Seconds between captures for inactive (background) windows
+  bg_interval: 30
+
+  # Min seconds between captures triggered by AX tree dynamic changes
+  ax_trigger_interval: 10
+
+# --- Web UI ---
+gui:
+  host: "127.0.0.1"
+  port: 5555
+
+# --- LLM Settings (optional, only needed for `pme_cli.py ask --ask`) ---
+llm:
+  # litellm provider string: openai / deepseek / anthropic / gemini / etc.
+  provider: "openai"
+
+  # Model name as understood by litellm
+  model: "gpt-4o-mini"
+
+  # Sampling temperature (0.0 = deterministic, 1.0 = creative)
+  temperature: 0.2
