@@ -862,11 +862,14 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
             <!-- PME Auto-Cleaner Status -->
             <div class="status-card" id="auto-cleaner-card" style="margin-top: 24px;">
-                <h3>
-                    <span class="status-indicator" id="auto-cleaner-status"></span>
-                    PME Auto-Cleaner
-                    <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-left: 8px;">Incremental every 5 min</span>
-                </h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; width: 100%;">
+                    <h3 style="margin: 0; display: flex; align-items: center;">
+                        <span class="status-indicator" id="auto-cleaner-status"></span>
+                        PME Auto-Cleaner
+                        <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-left: 8px;">Incremental every 5 min</span>
+                    </h3>
+                    <button class="header-btn" onclick="triggerAutoCleaner(event)" style="padding: 4px 12px; font-size: 11px; margin: 0;">Trigger Now</button>
+                </div>
                 <div id="auto-cleaner-info" style="margin: 12px 0; color: var(--text-secondary); font-size: 13px;">
                     Initializing...
                 </div>
@@ -1705,6 +1708,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     logDiv.innerHTML = html;
                 })
                 .catch(function(err) { console.error('Failed to load auto-cleaner status:', err); });
+        }
+
+        function triggerAutoCleaner(event) {
+            var btn = event.currentTarget || event.target;
+            var originalText = btn.textContent;
+            btn.textContent = currentLang === 'zh' ? '运行中...' : 'Running...';
+            btn.disabled = true;
+            
+            fetch('/api/pme/auto-cleaner/trigger', { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    loadAutoCleanerStatus();
+                    if (data.success) {
+                        var msg = currentLang === 'zh' ? 
+                            '自动清洗完成！\n原始记录: ' + data.stats.raw_records + '\n清洗后: ' + data.stats.cleaned_records + '\n去重过滤: ' + data.stats.deduplicated :
+                            'Auto-cleaner run completed successfully!\nRaw: ' + data.stats.raw_records + '\nCleaned: ' + data.stats.cleaned_records + '\nDeduplicated: ' + data.stats.deduplicated;
+                        alert(msg);
+                    } else {
+                        var msg = currentLang === 'zh' ?
+                            '清洗被跳过: ' + data.message :
+                            'Auto-cleaner skipped: ' + data.message;
+                        alert(msg);
+                    }
+                })
+                .catch(function(err) {
+                    btn.textContent = originalText;
+                    btn.disabled = false;
+                    alert('Error: ' + err);
+                });
         }
 
 

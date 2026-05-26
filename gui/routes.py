@@ -24,71 +24,85 @@ def register_routes(app):
     auto_cleaner_log = []
     auto_cleaner_state = {"running": False, "last_check": None, "total_runs": 0}
     
-    def start_auto_cleaner():
-        def _has_recent_data(db_path, table, minutes=10):
-            """Check if a database has records written in the last N minutes."""
-            if not db_path or not os.path.exists(os.path.expanduser(db_path)):
+    def _has_recent_data(db_path, table, minutes=10):
+        """Check if a database has records written in the last N minutes."""
+        if not db_path or not os.path.exists(os.path.expanduser(db_path)):
+            return False
+        try:
+            conn = sqlite3.connect(os.path.expanduser(db_path))
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT timestamp FROM {table} ORDER BY timestamp DESC LIMIT 1")
+            row = cursor.fetchone()
+            conn.close()
+            if not row or not row[0]:
                 return False
-            try:
-                conn = sqlite3.connect(os.path.expanduser(db_path))
-                cursor = conn.cursor()
-                cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
-                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE timestamp >= ? LIMIT 1", (cutoff,))
-                count = cursor.fetchone()[0]
-                conn.close()
-                return count > 0
-            except Exception:
-                return False
+            ts_str = row[0].replace("Z", "+00:00")
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            diff = now - dt.astimezone(timezone.utc)
+            return -60 <= diff.total_seconds() <= minutes * 60
+        except Exception as e:
+            print(f"Error checking recent data in {db_path} ({table}): {e}")
+            return False
 
+    def run_auto_clean_once():
+        auto_cleaner_state["last_check"] = datetime.now().isoformat()
+        
+        # Check for fresh data instead of checking if processes are running
+        sp_has_data = _has_recent_data(get_sp_db(), "frames", minutes=10)
+        oc_has_data = _has_recent_data(get_oc_db(), "captures", minutes=10)
+            
+        if sp_has_data and oc_has_data:
+            auto_cleaner_state["running"] = True
+            print("🔄 Auto-cleaner: Fresh data in both databases. Running incremental PME clean...")
+            from src.cleaner import PMECleaner
+            cleaner = PMECleaner()
+            stats = cleaner.incremental_clean(minutes=30)
+            auto_cleaner_state["total_runs"] += 1
+            if stats:
+                log_entry = {
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "raw": stats.get("raw_records", 0),
+                    "cleaned": stats.get("cleaned_records", 0),
+                    "discarded": stats.get("discarded_incomplete_records", 0),
+                    "dedup": stats.get("deduplicated", 0),
+                    "status": "success"
+                }
+                auto_cleaner_log.append(log_entry)
+                # Keep only last 50 entries
+                if len(auto_cleaner_log) > 50:
+                    auto_cleaner_log.pop(0)
+                print(f"✅ Auto-cleaner success: raw={stats.get('raw_records', 0)}, cleaned={stats.get('cleaned_records', 0)}, discarded={stats.get('discarded_incomplete_records', 0)}")
+                return True, stats, None
+            return False, None, "No stats returned"
+        else:
+            auto_cleaner_state["running"] = False
+            reason = []
+            if not sp_has_data:
+                reason.append("No recent Screenpipe data")
+            if not oc_has_data:
+                reason.append("No recent OpenChronicle data")
+            reason_str = ", ".join(reason)
+            log_entry = {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "status": "skipped",
+                "reason": reason_str
+            }
+            auto_cleaner_log.append(log_entry)
+            if len(auto_cleaner_log) > 50:
+                auto_cleaner_log.pop(0)
+            return False, None, reason_str
+
+    def start_auto_cleaner():
         def worker():
             # Wait for Flask server to launch completely
             time.sleep(10)
             print("🌱 PME Auto-cleaner background thread started.")
             while True:
                 try:
-                    auto_cleaner_state["last_check"] = datetime.now().isoformat()
-                    
-                    # Check for fresh data instead of checking if processes are running
-                    sp_has_data = _has_recent_data(get_sp_db(), "frames", minutes=10)
-                    oc_has_data = _has_recent_data(get_oc_db(), "captures", minutes=10)
-                        
-                    if sp_has_data and oc_has_data:
-                        auto_cleaner_state["running"] = True
-                        print("🔄 Auto-cleaner: Fresh data in both databases. Running incremental PME clean...")
-                        from src.cleaner import PMECleaner
-                        cleaner = PMECleaner()
-                        stats = cleaner.incremental_clean(minutes=30)
-                        auto_cleaner_state["total_runs"] += 1
-                        if stats:
-                            log_entry = {
-                                "time": datetime.now().strftime("%H:%M:%S"),
-                                "raw": stats.get("raw_records", 0),
-                                "cleaned": stats.get("cleaned_records", 0),
-                                "discarded": stats.get("discarded_incomplete_records", 0),
-                                "dedup": stats.get("deduplicated", 0),
-                                "status": "success"
-                            }
-                            auto_cleaner_log.append(log_entry)
-                            # Keep only last 50 entries
-                            if len(auto_cleaner_log) > 50:
-                                auto_cleaner_log.pop(0)
-                            print(f"✅ Auto-cleaner success: raw={stats.get('raw_records', 0)}, cleaned={stats.get('cleaned_records', 0)}, discarded={stats.get('discarded_incomplete_records', 0)}")
-                    else:
-                        auto_cleaner_state["running"] = False
-                        reason = []
-                        if not sp_has_data:
-                            reason.append("No recent Screenpipe data")
-                        if not oc_has_data:
-                            reason.append("No recent OpenChronicle data")
-                        log_entry = {
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                            "status": "skipped",
-                            "reason": ", ".join(reason)
-                        }
-                        auto_cleaner_log.append(log_entry)
-                        if len(auto_cleaner_log) > 50:
-                            auto_cleaner_log.pop(0)
-                            
+                    run_auto_clean_once()
                 except Exception as e:
                     print(f"⚠️ Auto-cleaner error: {e}")
                     auto_cleaner_log.append({
@@ -112,6 +126,28 @@ def register_routes(app):
             "state": auto_cleaner_state,
             "log": auto_cleaner_log[-10:]  # Return last 10 entries
         })
+
+    # Auto-cleaner trigger API
+    @app.route("/api/pme/auto-cleaner/trigger", methods=["POST"])
+    def auto_cleaner_trigger():
+        try:
+            success, stats, reason = run_auto_clean_once()
+            if success:
+                return jsonify({
+                    "success": True,
+                    "message": "Incremental PME clean completed successfully.",
+                    "stats": stats
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "message": f"Cleaner skipped: {reason}"
+                })
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "message": f"Error triggering auto-cleaner: {e}"
+            }), 500
 
     # Dynamic configuration getters so Web UI modifications take effect immediately
     def get_sp_api():
@@ -629,6 +665,12 @@ def register_routes(app):
             end_time = req_data.get("end_time")
             output_path = req_data.get("output_path")  # User-specified save path
             
+            if not output_path:
+                import tempfile
+                fd, temp_path = tempfile.mkstemp(suffix=".db", prefix="pme_temp_cleaned_")
+                os.close(fd)
+                output_path = temp_path
+                
             cleaner = PMECleaner()
             stats = cleaner.clean(
                 start_time_str=start_time,
