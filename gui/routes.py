@@ -430,8 +430,9 @@ def register_routes(app):
             rows = engine.retrieve_context(query, limit=20)
             results = []
             for row in rows:
-                ts, app, title, text, reason, focused = row
+                ts, app, title, raw_text, cleaned_text, quality, kind, reason, focused = row
                 status = "Active" if focused else "Background"
+                text = cleaned_text or raw_text or ""
                 results.append({
                     "type": "Cleaned Memory",
                     "content": {
@@ -439,9 +440,11 @@ def register_routes(app):
                         "app_name": app or "Unknown",
                         "app": app or "Unknown",
                         "window_name": title or "",
-                        "text": text[:500] if text else "",
-                        "content": text[:500] if text else "",
+                        "text": text[:500],
+                        "content": text[:500],
                         "trigger_reason": reason or "",
+                        "content_kind": kind or "",
+                        "ocr_quality_score": quality,
                         "focused": focused,
                         "status": status
                     }
@@ -589,6 +592,7 @@ def register_routes(app):
         sp_count = 0
         oc_count = 0
         pme_count = 0
+        segment_count = 0
         
         try:
             if sp_size > 0:
@@ -601,7 +605,12 @@ def register_routes(app):
                 conn.close()
             if pme_size > 0:
                 conn = sqlite3.connect(pme_db_path)
-                pme_count = conn.cursor().execute("SELECT count(*) FROM cleaned_memories").fetchone()[0]
+                cursor = conn.cursor()
+                pme_count = cursor.execute("SELECT count(*) FROM cleaned_memories").fetchone()[0]
+                try:
+                    segment_count = cursor.execute("SELECT count(*) FROM work_segments").fetchone()[0]
+                except Exception:
+                    segment_count = 0
                 conn.close()
         except Exception:
             pass
@@ -609,8 +618,52 @@ def register_routes(app):
         return jsonify({
             "screenpipe": {"size_mb": round(sp_size / (1024*1024), 2), "records": sp_count},
             "openchronicle": {"size_mb": round(oc_size / (1024*1024), 2), "records": oc_count},
-            "pme_cleaned": {"size_mb": round(pme_size / (1024*1024), 2), "records": pme_count}
+            "pme_cleaned": {
+                "size_mb": round(pme_size / (1024*1024), 2),
+                "records": pme_count,
+                "segments": segment_count
+            }
         })
+
+    @app.route("/api/pme/segments")
+    def pme_segments():
+        pme_db_path = get_cleaned_db()
+        limit = int(request.args.get("limit", "20"))
+        if not pme_db_path or not os.path.exists(pme_db_path):
+            return jsonify([])
+        try:
+            conn = sqlite3.connect(pme_db_path)
+            cursor = conn.cursor()
+            rows = cursor.execute(
+                """
+                SELECT start_timestamp, end_timestamp, duration_seconds, activity_type,
+                       app_names, window_titles, summary, actions_json, artifacts_json,
+                       llm_summary_text, confidence, record_count
+                FROM work_segments
+                ORDER BY start_timestamp DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            conn.close()
+            return jsonify([
+                {
+                    "start_timestamp": row[0],
+                    "end_timestamp": row[1],
+                    "duration_seconds": row[2],
+                    "activity_type": row[3],
+                    "app_names": row[4],
+                    "window_titles": row[5],
+                    "summary": row[9] or row[6],
+                    "actions_json": row[7],
+                    "artifacts_json": row[8],
+                    "confidence": row[10],
+                    "record_count": row[11],
+                }
+                for row in rows
+            ])
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
 
     # ── PME Config and Cleaning API Endpoints ───────────────────────────
 
@@ -947,4 +1000,3 @@ def register_routes(app):
                 return jsonify({"error": str(e), "events": []}), 500
 
         return jsonify({"date": date, "events": events})
-

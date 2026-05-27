@@ -1474,6 +1474,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         var metaDetails = '';
                         if (item.type === 'Cleaned Memory') {
                             metaDetails = ' | <strong>Trigger:</strong> ' + (content.trigger_reason || 'N/A') + ' | <strong>State:</strong> ' + (content.status || 'Unknown');
+                            if (content.content_kind) metaDetails += ' | <strong>Kind:</strong> ' + content.content_kind;
+                            if (content.ocr_quality_score !== undefined && content.ocr_quality_score !== null) metaDetails += ' | <strong>Quality:</strong> ' + content.ocr_quality_score;
                         }
                         return '<div class="result-item">' +
                             '<div class="result-meta">' +

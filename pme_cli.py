@@ -9,6 +9,24 @@ from src.cleaner import PMECleaner
 from src.qa_engine import PMEQueryEngine
 from gui import register_routes
 
+
+def build_segment_llm_config(args):
+    config = get_config()
+    segment_llm_cfg = config.get("work_segments", {}).get("llm", {})
+    if not getattr(args, "enable_llm_summary", False):
+        return None
+
+    api_key_env = segment_llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY")
+    return {
+        "enabled": True,
+        "segment_budget": max(0, getattr(args, "llm_segment_budget", segment_llm_cfg.get("segment_budget", 50))),
+        "model": segment_llm_cfg.get("model", "deepseek-v4-flash"),
+        "base_url": segment_llm_cfg.get("base_url", "https://api.deepseek.com/v1"),
+        "api_key_env": api_key_env,
+        "api_key": os.environ.get(api_key_env) or segment_llm_cfg.get("api_key"),
+        "timeout": getattr(args, "llm_timeout", segment_llm_cfg.get("timeout", 60)),
+    }
+
 def print_banner():
     banner = """
 ======================================================================
@@ -20,7 +38,16 @@ def print_banner():
 def handle_clean(args):
     print("🚀 Starting PME-OCR Multi-Frequency Data Cleaning...")
     cleaner = PMECleaner()
-    cleaner.clean(days=args.days)
+    cleaner.clean(
+        start_time_str=args.start,
+        end_time_str=args.end,
+        days=args.days,
+        min_quality=args.min_quality,
+        segment_gap_minutes=args.segment_gap_minutes,
+        max_segment_minutes=args.max_segment_minutes,
+        focus_switch_split_minutes=args.focus_switch_split_minutes,
+        llm_config=build_segment_llm_config(args),
+    )
 
 def handle_ask(args):
     print(f"🚀 Querying PME Cleaned memories for: '{args.query}'...")
@@ -36,9 +63,11 @@ def handle_ask(args):
     print("Context Summary:")
     print("="*60)
     for i, row in enumerate(result["rows"]):
-        ts, app, title, _, reason, focused = row
+        ts, app, title, _, _, quality, kind, reason, focused = row
         status = "Active" if focused else "Background"
-        print(f"  #{i+1} [{ts}] {app} - {title} ({status} | Trigger: {reason})")
+        quality_label = f" | Quality: {quality}" if quality is not None else ""
+        kind_label = f" | Kind: {kind}" if kind else ""
+        print(f"  #{i+1} [{ts}] {app} - {title} ({status} | Trigger: {reason}{kind_label}{quality_label})")
     print("="*60)
     
     if not args.ask:
@@ -46,6 +75,49 @@ def handle_ask(args):
         print("="*60)
         print(result["prompt"])
         print("="*60)
+
+
+def handle_segments(args):
+    config = get_config()
+    cleaned_db = config.get("database", {}).get("cleaned_db")
+    if not cleaned_db or not os.path.exists(cleaned_db):
+        print(f"Cleaned memory database not found at {cleaned_db}. Please run cleaner first.")
+        return
+
+    conn = sqlite3.connect(cleaned_db)
+    cursor = conn.cursor()
+    table_exists = cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='work_segments'"
+    ).fetchone()
+    if not table_exists:
+        conn.close()
+        print("No work_segments table found. Please run a clean with the merged segment engine.")
+        return
+
+    rows = cursor.execute(
+        """
+        SELECT start_timestamp, end_timestamp, duration_seconds, activity_type,
+               summary, llm_summary_text, confidence, record_count
+        FROM work_segments
+        ORDER BY start_timestamp DESC
+        LIMIT ?
+        """,
+        (args.limit,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        print("No work segments found.")
+        return
+
+    print(f"Latest {len(rows)} work segments:")
+    print("="*60)
+    for i, row in enumerate(rows):
+        start, end, duration, activity, summary, llm_summary, confidence, record_count = row
+        duration_min = round((duration or 0) / 60)
+        print(f"#{i+1} [{start} -> {end}] {activity} | {duration_min} min | confidence={confidence} | records={record_count}")
+        print(f"  {llm_summary or summary}")
+        print("-"*60)
 
 def handle_status(args):
     config = get_config()
@@ -99,17 +171,30 @@ def main():
     # 1. Clean command
     parser_clean = subparsers.add_parser("clean", help="Clean and deduplicate Screenpipe data")
     parser_clean.add_argument("--days", type=int, default=3, help="Number of past days to clean (default 3)")
+    parser_clean.add_argument("--start", type=str, default=None, help="Start ISO timestamp for cleaning")
+    parser_clean.add_argument("--end", type=str, default=None, help="End ISO timestamp for cleaning")
+    parser_clean.add_argument("--min-quality", type=float, default=None, help="Minimum OCR quality score to store")
+    parser_clean.add_argument("--segment-gap-minutes", type=int, default=None, help="Start a new work segment after this many quiet minutes")
+    parser_clean.add_argument("--max-segment-minutes", type=int, default=None, help="Force a new work segment after this many minutes")
+    parser_clean.add_argument("--focus-switch-split-minutes", type=int, default=None, help="Split after this many minutes on focused app/window switch")
+    parser_clean.add_argument("--enable-llm-summary", action="store_true", help="Summarize work segments with configured LLM")
+    parser_clean.add_argument("--llm-segment-budget", type=int, default=50, help="Max segments to summarize with LLM")
+    parser_clean.add_argument("--llm-timeout", type=int, default=60, help="Timeout in seconds for each segment LLM request")
     
     # 2. Ask command
     parser_ask = subparsers.add_parser("ask", help="Query PME memories using FTS5 and LLM RAG")
     parser_ask.add_argument("query", type=str, help="Search query (e.g. 'Aura Project')")
     parser_ask.add_argument("--limit", type=int, default=5, help="Max context entries to retrieve (default 5)")
     parser_ask.add_argument("--ask", action="store_true", help="Submit to LLM and print answer (requires litellm)")
+
+    # 3. Segments command
+    parser_segments = subparsers.add_parser("segments", help="Show generated work segment summaries")
+    parser_segments.add_argument("--limit", type=int, default=10, help="Max segments to print (default 10)")
     
-    # 3. Status command
+    # 4. Status command
     subparsers.add_parser("status", help="Show system database size and records counts")
     
-    # 4. GUI command
+    # 5. GUI command
     subparsers.add_parser("gui", help="Start Web UI administration console")
     
     args = parser.parse_args()
@@ -118,6 +203,8 @@ def main():
         handle_clean(args)
     elif args.command == "ask":
         handle_ask(args)
+    elif args.command == "segments":
+        handle_segments(args)
     elif args.command == "status":
         handle_status(args)
     elif args.command == "gui":

@@ -8,14 +8,14 @@
 # --- Database Paths ---
 database:
   # Where Screenpipe stores its SQLite database
-  screenpipe_db: "~/.screenpipe/db.sqlite"
+  screenpipe_db: "/Users/zhouboyu/Documents/xreal/pme/db.sqlite"
 
   # Where OpenChronicle stores its SQLite database
-  openchronicle_db: "~/.openchronicle/index.db"
-
+  openchronicle_db: ""
+  
   # Where PME writes the cleaned, deduplicated output database
   # This is the file you'll use for RAG / Q&A queries
-  cleaned_db: "~/pme_cleaned_memories.db"
+  cleaned_db: "./pme_cleaned_memories.db"
 
 # --- Screenpipe Settings ---
 screenpipe:
@@ -48,6 +48,32 @@ cleaning_policy:
 
   # Min seconds between captures triggered by AX tree dynamic changes
   ax_trigger_interval: 10
+
+  # Minimum OCR quality score to keep after text normalization
+  min_quality: 0.18
+
+# --- Work Segment Reconstruction ---
+# Groups cleaned OCR snapshots into higher-level activity blocks.
+work_segments:
+  # Enable LLM summaries for work segments during cleaning
+  enable_LLM_summary: true
+
+  # Start a new segment after this many minutes without related activity
+  gap_minutes: 8
+
+  # Force a new segment after this many minutes even if activity is continuous
+  max_minutes: 30
+
+  # Split after a focused app/window switch lasts longer than this many minutes
+  focus_switch_split_minutes: 5
+
+  # Optional, only used with `pme_cli.py clean --enable-llm-summary`
+  llm:
+    model: "deepseek-v4-flash"
+    base_url: "https://api.deepseek.com/v1"
+    api_key_env: "DEEPSEEK_API_KEY"
+    segment_budget: 50
+    timeout: 60
 
 # --- Web UI ---
 gui:

@@ -19,21 +19,47 @@ class PMEQueryEngine:
             
         conn = sqlite3.connect(self.cleaned_db)
         cursor = conn.cursor()
+
+        cursor.execute("PRAGMA table_info(cleaned_memories)")
+        columns = {row[1] for row in cursor.fetchall()}
+        has_enriched_columns = {"cleaned_text", "ocr_quality_score", "content_kind"}.issubset(columns)
         
-        sql = """
-        SELECT 
-            m.timestamp, 
-            m.app_name, 
-            m.window_title, 
-            m.ocr_text, 
-            m.trigger_reason, 
-            m.focused
-        FROM cleaned_memories_fts fts
-        JOIN cleaned_memories m ON m.id = fts.id
-        WHERE cleaned_memories_fts MATCH ?
-        ORDER BY rank ASC
-        LIMIT ?
-        """
+        if has_enriched_columns:
+            sql = """
+            SELECT
+                m.timestamp,
+                m.app_name,
+                m.window_title,
+                m.ocr_text,
+                m.cleaned_text,
+                m.ocr_quality_score,
+                m.content_kind,
+                m.trigger_reason,
+                m.focused
+            FROM cleaned_memories_fts fts
+            JOIN cleaned_memories m ON m.id = fts.id
+            WHERE cleaned_memories_fts MATCH ?
+            ORDER BY rank ASC
+            LIMIT ?
+            """
+        else:
+            sql = """
+            SELECT
+                m.timestamp,
+                m.app_name,
+                m.window_title,
+                m.ocr_text,
+                m.ocr_text AS cleaned_text,
+                NULL AS ocr_quality_score,
+                NULL AS content_kind,
+                m.trigger_reason,
+                m.focused
+            FROM cleaned_memories_fts fts
+            JOIN cleaned_memories m ON m.id = fts.id
+            WHERE cleaned_memories_fts MATCH ?
+            ORDER BY rank ASC
+            LIMIT ?
+            """
         
         # Simple FTS5 query parser
         keywords = " OR ".join([f'"{w}"' for w in query.split() if w.strip()])
@@ -47,14 +73,28 @@ class PMEQueryEngine:
         except sqlite3.OperationalError:
             # Fallback to simple LIKE query
             fallback_sql = """
-            SELECT timestamp, app_name, window_title, ocr_text, trigger_reason, focused
+            SELECT timestamp, app_name, window_title, ocr_text,
+                   COALESCE(cleaned_text, ocr_text) AS cleaned_text,
+                   ocr_quality_score, content_kind, trigger_reason, focused
             FROM cleaned_memories
-            WHERE ocr_text LIKE ? OR app_name LIKE ? OR window_title LIKE ?
+            WHERE ocr_text LIKE ? OR COALESCE(cleaned_text, '') LIKE ? OR app_name LIKE ? OR window_title LIKE ?
             ORDER BY timestamp DESC
             LIMIT ?
             """
             pattern = f"%{query}%"
-            cursor.execute(fallback_sql, (pattern, pattern, pattern, limit))
+            if has_enriched_columns:
+                cursor.execute(fallback_sql, (pattern, pattern, pattern, pattern, limit))
+            else:
+                fallback_sql = """
+                SELECT timestamp, app_name, window_title, ocr_text,
+                       ocr_text AS cleaned_text, NULL AS ocr_quality_score, NULL AS content_kind,
+                       trigger_reason, focused
+                FROM cleaned_memories
+                WHERE ocr_text LIKE ? OR app_name LIKE ? OR window_title LIKE ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """
+                cursor.execute(fallback_sql, (pattern, pattern, pattern, limit))
             rows = cursor.fetchall()
             
         conn.close()
@@ -66,19 +106,26 @@ class PMEQueryEngine:
             
         blocks = []
         for i, row in enumerate(rows):
-            ts, app, title, text, reason, focused = row
+            ts, app, title, raw_text, cleaned_text, quality, kind, reason, focused = row
             status = "活动窗口" if focused else "后台窗口"
             # Format text snippet
-            lines = [line.strip() for line in text.split("\n") if line.strip()]
+            text_for_prompt = cleaned_text or raw_text or ""
+            lines = [line.strip() for line in text_for_prompt.split("\n") if line.strip()]
             clean_text = "\n  ".join(lines[:15])
             if len(lines) > 15:
                 clean_text += "\n  ... [其余内容已被截断]"
+            meta = []
+            if kind:
+                meta.append(f"内容类型: {kind}")
+            if quality is not None:
+                meta.append(f"OCR质量: {quality}")
                 
             block = (
                 f"快照记录 #{i+1}\n"
                 f"时间: {ts} ({status})\n"
                 f"软件: {app} | 窗口: {title}\n"
                 f"触发: {reason}\n"
+                f"{' | '.join(meta)}\n"
                 f"内容:\n  {clean_text}\n"
                 f"--------------------------------------------------"
             )

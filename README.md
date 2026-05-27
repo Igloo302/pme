@@ -242,6 +242,21 @@ python pme_cli.py status
 
 Shows record counts and file sizes for all three databases.
 
+### Review Work Segments
+
+The cleaner also groups high-quality OCR snapshots into higher-level work segments.
+
+```bash
+python pme_cli.py segments --limit 10
+```
+
+Optional segment-level LLM summaries can be generated during cleaning:
+
+```bash
+export DEEPSEEK_API_KEY="..."
+python pme_cli.py clean --enable-llm-summary --llm-segment-budget 20
+```
+
 ---
 
 ## Auto-Cleaner
@@ -262,8 +277,10 @@ You can watch it live on the Dashboard's **PME Auto-Cleaner** card.
    - Did focus just switch? → immediate snapshot
    - Did OpenChronicle fire an AX event for this background window? → dynamic rule (10s)
    - Otherwise → low-freq rule (30s)
-5. **Content dedup** — if the OCR text hasn't changed since the last stored record for this window, skip it.
-6. **Write** kept records to `cleaned_memories` table with FTS5 triggers for fast full-text search.
+5. **OCR normalization + quality scoring** — remove menu/status noise, keep `cleaned_text`, score OCR usefulness, and classify content as coding, meeting, chat, writing, browsing, system, or other.
+6. **Content dedup** — if normalized OCR text hasn't changed since the last stored record for this window, skip it.
+7. **Work segment reconstruction** — group cleaned records into `work_segments` with local summaries, artifacts, evidence ids, confidence scores, and optional LLM summaries.
+8. **Write** kept records to `cleaned_memories` table with FTS5 triggers for fast full-text search.
 
 ---
 
@@ -272,7 +289,7 @@ You can watch it live on the Dashboard's **PME Auto-Cleaner** card.
 - **macOS only** — both Screenpipe and OpenChronicle are macOS-first. Linux support would require alternative sensor tools.
 - **Two tools required** — if either tool is offline, a whole time bucket is discarded. This is intentional (incomplete data = unreliable signal), but means gaps in recording are gaps in memory.
 - **No audio** — this version focuses on screen text. Screenpipe captures audio transcripts too; wiring those in is a natural next step.
-- **No LLM summarization** — the current RAG just retrieves raw OCR text. Summarizing it per-session or per-day would make results much more readable.
+- **Optional LLM summarization** — segment summaries require an API key and are disabled by default; without one, PME still writes local segment summaries.
 - **Refactoring** — this is an exploration. Once the approach is validated, the architecture would be simplified significantly.
 
 ---
