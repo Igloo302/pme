@@ -52,6 +52,23 @@ cleaning_policy:
   # Minimum OCR quality score to keep after text normalization
   min_quality: 0.18
 
+  # Drop these high-frequency system surfaces before quality scoring
+  ignored_apps:
+    - "控制中心"
+    - "通知中心"
+    - "程序坞"
+    - "Control Center"
+    - "Notification Center"
+    - "Dock"
+
+  # These system apps can be useful, but only when focused and text-rich
+  system_apps_keep_if_focused:
+    - "系统设置"
+    - "System Settings"
+
+  # Drop records whose normalized OCR has fewer useful letters/digits/CJK chars
+  min_useful_chars: 8
+
 # --- Work Segment Reconstruction ---
 # Groups cleaned OCR snapshots into higher-level activity blocks.
 work_segments:

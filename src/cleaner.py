@@ -76,6 +76,10 @@ def score_ocr_quality(app, raw_text, cleaned_text):
     return round(max(0.0, min(1.0, score)), 3)
 
 
+def count_useful_chars(text):
+    return len(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", text or ""))
+
+
 def classify_content_kind(app, window, text):
     haystack = " ".join([app or "", window or "", text or ""]).lower()
 
@@ -300,9 +304,29 @@ class PMECleaner:
         self.bg_interval = self.policy_cfg.get("bg_interval", 30)
         self.ax_trigger_interval = self.policy_cfg.get("ax_trigger_interval", 10)
         self.min_quality = self.policy_cfg.get("min_quality", 0.18)
+        self.ignored_apps = set(self.policy_cfg.get("ignored_apps", []))
+        self.system_apps_keep_if_focused = set(self.policy_cfg.get("system_apps_keep_if_focused", []))
+        self.min_useful_chars = self.policy_cfg.get("min_useful_chars", 8)
         self.segment_gap_minutes = self.segment_cfg.get("gap_minutes", 8)
         self.max_segment_minutes = self.segment_cfg.get("max_minutes", 30)
         self.focus_switch_split_minutes = self.segment_cfg.get("focus_switch_split_minutes", 5)
+
+    def classify_noise_reason(self, app, focused, cleaned_text):
+        if app in self.ignored_apps:
+            return "ignored_app"
+
+        useful_chars = count_useful_chars(cleaned_text)
+        if app in self.system_apps_keep_if_focused:
+            if focused != 1:
+                return "unfocused_system_app"
+            if useful_chars < self.min_useful_chars:
+                return "low_information"
+            return None
+
+        if useful_chars < self.min_useful_chars:
+            return "low_information"
+
+        return None
 
     def build_segment_llm_config(self):
         enabled = bool(self.segment_cfg.get("enable_LLM_summary", False))
@@ -580,6 +604,9 @@ class PMECleaner:
             "dynamic_ax_change": 0,
             "initial": 0,
             "deduplicated": 0,
+            "ignored_app": 0,
+            "unfocused_system_app": 0,
+            "low_information": 0,
             "low_quality": 0,
             "segments": 0,
             "llm_summarized": 0,
@@ -625,6 +652,11 @@ class PMECleaner:
                 if trigger:
                     last_ocr_time[app][window] = t
                     cleaned_text = normalize_ocr_text(text)
+                    noise_reason = self.classify_noise_reason(app, focused, cleaned_text)
+                    if noise_reason:
+                        stats[noise_reason] += 1
+                        continue
+
                     quality_score = score_ocr_quality(app, text, cleaned_text)
                     content_kind = classify_content_kind(app, window, cleaned_text)
 
@@ -1079,6 +1111,9 @@ JSON 字段契约：
         print(f"Discarded Incomplete Records: {stats.get('discarded_incomplete_records', 0)}")
         print(f"Cleaned Records: {stats.get('cleaned_records', 0)}")
         print(f"Deduplicated (Skipped): {stats.get('deduplicated', 0)}")
+        print(f"Ignored Apps (Skipped): {stats.get('ignored_app', 0)}")
+        print(f"Unfocused System Apps (Skipped): {stats.get('unfocused_system_app', 0)}")
+        print(f"Low Information (Skipped): {stats.get('low_information', 0)}")
         print(f"Low Quality (Skipped): {stats.get('low_quality', 0)}")
         print(f"Work Segments: {stats.get('segments', 0)}")
         print(f"LLM Segment Summaries: {stats.get('llm_summarized', 0)} ok, {stats.get('llm_failed', 0)} failed")
