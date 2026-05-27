@@ -12,8 +12,9 @@ from gui import register_routes
 
 def build_segment_llm_config(args):
     config = get_config()
-    segment_llm_cfg = config.get("work_segments", {}).get("llm", {})
-    if not getattr(args, "enable_llm_summary", False):
+    segment_cfg = config.get("work_segments", {})
+    segment_llm_cfg = segment_cfg.get("llm", {})
+    if not bool(segment_cfg.get("enable_LLM_summary", False)):
         return None
 
     api_key_env = segment_llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY")
@@ -177,8 +178,6 @@ def main():
     parser_clean.add_argument("--segment-gap-minutes", type=int, default=None, help="Start a new work segment after this many quiet minutes")
     parser_clean.add_argument("--max-segment-minutes", type=int, default=None, help="Force a new work segment after this many minutes")
     parser_clean.add_argument("--focus-switch-split-minutes", type=int, default=None, help="Split after this many minutes on focused app/window switch")
-    parser_clean.add_argument("--enable-llm-summary", action="store_true", help="Summarize work segments with configured LLM")
-    parser_clean.add_argument("--llm-segment-budget", type=int, default=50, help="Max segments to summarize with LLM")
     parser_clean.add_argument("--llm-timeout", type=int, default=60, help="Timeout in seconds for each segment LLM request")
     
     # 2. Ask command

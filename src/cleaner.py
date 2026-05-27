@@ -871,7 +871,6 @@ JSON 字段契约：
         llm_budget = llm_config.get("segment_budget", 0) if llm_config else 0
 
         for records in segments:
-            print("loop segment, summarize")
             summary = summarize_segment(records)
             cursor.execute(
                 """
