@@ -76,7 +76,7 @@ view_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 10
+  llm_budget: 50
   llm_timeout: 60
 
 # --- Segment Reconstruction ---
@@ -100,6 +100,15 @@ segment_generation:
   llm_api_key_env: "DEEPSEEK_API_KEY"
   llm_budget: 50
   llm_timeout: 60
+
+# --- Cross-time Memory Topic Reconstruction ---
+# Groups semantically related views across non-continuous time ranges.
+memory_topic_generation:
+  enabled: true
+  min_relevance: 0.35
+  title_similarity_threshold: 0.82
+  semantic_similarity_threshold: 0.35
+  max_time_gap_days: 30
 
 # --- Web UI ---
 gui:

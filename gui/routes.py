@@ -593,6 +593,7 @@ def register_routes(app):
         oc_count = 0
         pme_count = 0
         segment_count = 0
+        memory_topic_count = 0
         
         try:
             if sp_size > 0:
@@ -611,6 +612,10 @@ def register_routes(app):
                     segment_count = cursor.execute(f"SELECT count(*) FROM segments").fetchone()[0]
                 except Exception:
                     segment_count = 0
+                try:
+                    memory_topic_count = cursor.execute(f"SELECT count(*) FROM memory_topics").fetchone()[0]
+                except Exception:
+                    memory_topic_count = 0
                 conn.close()
         except Exception:
             pass
@@ -621,7 +626,8 @@ def register_routes(app):
             "pme_cleaned": {
                 "size_mb": round(pme_size / (1024*1024), 2),
                 "records": pme_count,
-                "segments": segment_count
+                "segments": segment_count,
+                "memory_topics": memory_topic_count
             }
         })
 
