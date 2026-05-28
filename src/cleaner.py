@@ -190,36 +190,36 @@ def _is_hard_activity_switch(previous_group, current_group):
     return "meeting" in {previous_group, current_group} or "chat" in {previous_group, current_group}
 
 
-def _should_start_new_segment(current, record, gap, max_duration, focus_switch_gap):
-    anchor = _last_non_system_record(current)
-    if anchor is None:
+def _should_start_new_segment(current_group, next_record, gap, max_duration, focus_switch_gap):
+    anchor_record = _last_non_system_record(current_group)
+    if anchor_record is None:
         return False
 
-    time_gap = record["timestamp_dt"] - anchor["timestamp_dt"]
+    time_gap = next_record["timestamp_dt"] - anchor_record["timestamp_dt"]
     if time_gap > gap:
         return True
 
-    segment_duration = record["timestamp_dt"] - current[0]["timestamp_dt"]
+    segment_duration = next_record["timestamp_dt"] - current_group[0]["timestamp_dt"]
     if segment_duration > max_duration:
         return True
 
-    current_group = _activity_group(record)
-    anchor_group = _activity_group(anchor)
-    if current_group == "system":
+    next_activity = _activity_group(next_record)
+    anchor_activity = _activity_group(anchor_record)
+    if next_activity == "system":
         return False
 
-    if _is_hard_activity_switch(anchor_group, current_group) and record["focused"] == 1 and time_gap > timedelta(seconds=30):
+    if _is_hard_activity_switch(anchor_activity, next_activity) and next_record["focused"] == 1 and time_gap > timedelta(seconds=30):
         return True
 
-    if record["focused"] == 1 and anchor.get("focused") == 1:
-        app_changed = record.get("app") != anchor.get("app")
-        window_changed = record.get("window") != anchor.get("window")
+    if next_record["focused"] == 1 and anchor_record.get("focused") == 1:
+        app_changed = next_record.get("app") != anchor_record.get("app")
+        window_changed = next_record.get("window") != anchor_record.get("window")
         if app_changed and window_changed and time_gap > focus_switch_gap:
             return True
 
-        current_artifacts = _artifact_keys(record)
-        anchor_artifacts = _artifact_keys(anchor)
-        if current_artifacts and anchor_artifacts and not (current_artifacts & anchor_artifacts):
+        next_artifacts = _artifact_keys(next_record)
+        anchor_artifacts = _artifact_keys(anchor_record)
+        if next_artifacts and anchor_artifacts and not (next_artifacts & anchor_artifacts):
             return time_gap > timedelta(minutes=2)
 
     return False
@@ -234,26 +234,27 @@ def group_segments_from_records(records, gap_minutes, max_segment_minutes=30, fo
     max_duration = timedelta(minutes=max_segment_minutes)
     focus_switch_gap = timedelta(minutes=focus_switch_split_minutes)
     segments = []
-    current = []
+    current_group = []
 
     for record in sorted_records:
-        if not current:
-            current = [record]
+        if not current_group:
+            current_group = [record]
             continue
 
-        if _should_start_new_segment(current, record, gap, max_duration, focus_switch_gap):
-            segments.append(current)
-            current = [record]
+        if _should_start_new_segment(current_group, record, gap, max_duration, focus_switch_gap):
+            segments.append(current_group)
+            current_group = [record]
         else:
-            current.append(record)
+            current_group.append(record)
 
-    if current:
-        segments.append(current)
+    if current_group:
+        segments.append(current_group)
 
     return segments
 
 
-def summarize_segment(records):
+def summarize_segment(records, view_infos=None):
+    view_infos = view_infos or []
     app_counts = Counter(record["app"] for record in records if record["app"])
     kind_counts = Counter(record["content_kind"] for record in records if record["content_kind"])
     activity_type = kind_counts.most_common(1)[0][0] if kind_counts else "other"
@@ -295,6 +296,19 @@ def summarize_segment(records):
     for snippet in snippets[:3]:
         actions.append(f"屏幕证据显示：{snippet[:160]}")
 
+    view_summaries = []
+    for view_info in view_infos:
+        view_text = view_info.get("llm_digest_text") or view_info.get("digest_text") or ""
+        app_name = view_info.get("app_name") or "未知应用"
+        window_title = view_info.get("window_title") or "未知窗口"
+        if view_text:
+            view_summaries.append(f"{app_name} - {window_title}: {view_text[:220]}")
+
+    if view_summaries:
+        actions.append(f"综合了 {len(view_summaries)} 个应用窗口视图。")
+        for view_summary in view_summaries[:4]:
+            actions.append(f"视图摘要显示：{view_summary}")
+
     start = records[0]["timestamp_dt"]
     end = records[-1]["timestamp_dt"]
     duration_min = max(1, round((end - start).total_seconds() / 60))
@@ -306,6 +320,8 @@ def summarize_segment(records):
         summary += f" 主要窗口包括：{'; '.join(windows[:3])}。"
     if artifacts:
         summary += f" 识别到的文件或链接线索：{', '.join(artifacts[:5])}。"
+    if view_summaries:
+        summary += " 视图层面显示：" + "；".join(view_summaries[:3])[:600] + "。"
 
     confidence = sum(record["ocr_quality_score"] for record in records) / max(1, len(records))
     if len(records) >= 5:
@@ -347,7 +363,7 @@ def extract_keywords(text, limit=20):
     return keywords
 
 
-def build_view_digest(segment_id, records):
+def summarize_view(records):
     sorted_records = sorted(records, key=lambda item: item["timestamp_dt"])
     app = sorted_records[0].get("app")
     window = sorted_records[0].get("window")
@@ -401,7 +417,6 @@ def build_view_digest(segment_id, records):
         confidence += 0.05
 
     return {
-        "segment_id": segment_id,
         "app_name": app,
         "window_title": window,
         "content_kind": content_kind,
@@ -462,11 +477,11 @@ class PMECleaner:
         self.policy_cfg = self.config.get("cleaning_policy", {})
         self.segment_cfg = self.config.get("segment_generation", {})
         self.view_cfg = self.config.get("view_generation", {})
-        
+
         self.screenpipe_db = self.db_cfg.get("screenpipe_db")
         self.openchronicle_db = self.db_cfg.get("openchronicle_db")
         self.cleaned_db = self.db_cfg.get("cleaned_db")
-        
+
         # Policy thresholds
         self.active_interval = self.policy_cfg.get("active_interval", 2)
         self.bg_interval = self.policy_cfg.get("bg_interval", 30)
@@ -747,29 +762,9 @@ class PMECleaner:
         print(f"Loaded {len(oc_events)} OpenChronicle events.")
         return oc_events
 
-    def process_cleaning(
-        self,
-        sp_rows,
-        oc_events,
-        output_conn,
-        min_quality=None,
-        segment_gap_minutes=None,
-        max_segment_minutes=None,
-        focus_switch_split_minutes=None,
-        segment_config=None,
-        view_config=None
-    ):
-        print("Running scheduling simulation & deduplication...")
+    def select_records_to_keep(self, sp_rows, oc_events, min_quality=None):
         min_quality = self.min_quality if min_quality is None else min_quality
-        segment_gap_minutes = self.segment_gap_minutes if segment_gap_minutes is None else segment_gap_minutes
-        max_segment_minutes = self.max_segment_minutes if max_segment_minutes is None else max_segment_minutes
-        focus_switch_split_minutes = (
-            self.focus_switch_split_minutes
-            if focus_switch_split_minutes is None
-            else focus_switch_split_minutes
-        )
-        
-        # Align timeline
+
         timeline = {}
         for row in sp_rows:
             ts_str, app_name, window_name, focused, text, frame_id = row
@@ -787,17 +782,29 @@ class PMECleaner:
                 })
             except Exception:
                 continue
-                
+
         sorted_seconds = sorted(timeline.keys())
         if not sorted_seconds:
             print("No aligned records to clean.")
-            return {}
-            
+            return [], {
+                "raw_records": len(sp_rows),
+                "cleaned_records": 0,
+                "active_high_freq": 0,
+                "focus_switch": 0,
+                "periodic_bg": 0,
+                "dynamic_ax_change": 0,
+                "initial": 0,
+                "deduplicated": 0,
+                "ignored_app": 0,
+                "unfocused_system_app": 0,
+                "low_information": 0,
+                "low_quality": 0,
+            }
+
         last_ocr_time = {}
         last_text = {}
         prev_active_windows = set()
-        inserted_records = []
-        
+        kept_records = []
         stats = {
             "raw_records": len(sp_rows),
             "cleaned_records": 0,
@@ -811,37 +818,29 @@ class PMECleaner:
             "unfocused_system_app": 0,
             "low_information": 0,
             "low_quality": 0,
-            "segments": 0,
-            "views": 0,
-            "segment_llm_generation_count": 0,
-            "segment_llm_failed_count": 0,
-            "view_llm_generation_count": 0,
-            "view_llm_failed_count": 0,
         }
-        
-        cursor = output_conn.cursor()
-        
+
         for t in sorted_seconds:
             second_records = timeline[t]
             current_active = set()
             for r in second_records:
                 if r["focused"] == 1:
                     current_active.add((r["app"], r["window"]))
-                    
+
             focus_changed = (current_active != prev_active_windows)
-            
+
             for r in second_records:
                 app, window, focused, text, frame_id = r["app"], r["window"], r["focused"], r["text"], r["frame_id"]
-                
+
                 if app not in last_ocr_time:
                     last_ocr_time[app] = {}
                     last_text[app] = {}
-                    
+
                 last_t = last_ocr_time[app].get(window)
                 prev_txt = last_text[app].get(window)
-                
+
                 trigger = None
-                
+
                 if last_t is None:
                     trigger = "initial"
                 elif focused == 1:
@@ -854,84 +853,184 @@ class PMECleaner:
                         trigger = "dynamic_ax_change"
                     elif (t - last_t).total_seconds() >= self.bg_interval:
                         trigger = "periodic_bg"
-                        
-                if trigger:
-                    last_ocr_time[app][window] = t
-                    cleaned_text = normalize_ocr_text(text)
-                    noise_reason = self.classify_noise_reason(app, focused, cleaned_text)
-                    if noise_reason:
-                        stats[noise_reason] += 1
-                        continue
 
-                    quality_score = score_ocr_quality(app, text, cleaned_text)
-                    content_kind = classify_content_kind(app, window, cleaned_text)
+                if not trigger:
+                    continue
 
-                    if quality_score < min_quality:
-                        stats["low_quality"] += 1
-                        continue
+                last_ocr_time[app][window] = t
+                cleaned_text = normalize_ocr_text(text)
+                noise_reason = self.classify_noise_reason(app, focused, cleaned_text)
+                if noise_reason:
+                    stats[noise_reason] += 1
+                    continue
 
-                    if cleaned_text == prev_txt:
-                        stats["deduplicated"] += 1
-                        continue
-                        
-                    last_text[app][window] = cleaned_text
-                    cursor.execute(
-                        """
-                        INSERT INTO records
-                        (timestamp, app_name, window_title, focused, ocr_text, cleaned_text,
-                         ocr_quality_score, content_kind, trigger_reason, raw_frame_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            t.isoformat(),
-                            app,
-                            window,
-                            focused,
-                            text,
-                            cleaned_text,
-                            quality_score,
-                            content_kind,
-                            trigger,
-                            frame_id,
-                        )
-                    )
-                    memory_id = cursor.lastrowid
-                    inserted_records.append({
-                        "id": memory_id,
-                        "timestamp": t.isoformat(),
-                        "timestamp_dt": t,
-                        "app": app,
-                        "window": window,
-                        "focused": focused,
-                        "cleaned_text": cleaned_text,
-                        "ocr_quality_score": quality_score,
-                        "content_kind": content_kind,
-                        "trigger": trigger,
-                    })
-                    stats["cleaned_records"] += 1
-                    stats[trigger] += 1
-                    
+                quality_score = score_ocr_quality(app, text, cleaned_text)
+                content_kind = classify_content_kind(app, window, cleaned_text)
+
+                if quality_score < min_quality:
+                    stats["low_quality"] += 1
+                    continue
+
+                if cleaned_text == prev_txt:
+                    stats["deduplicated"] += 1
+                    continue
+
+                last_text[app][window] = cleaned_text
+                kept_records.append({
+                    "timestamp": t.isoformat(),
+                    "timestamp_dt": t,
+                    "app": app,
+                    "window": window,
+                    "focused": focused,
+                    "text": text,
+                    "cleaned_text": cleaned_text,
+                    "ocr_quality_score": quality_score,
+                    "content_kind": content_kind,
+                    "trigger": trigger,
+                    "frame_id": frame_id,
+                })
+                stats["cleaned_records"] += 1
+                stats[trigger] += 1
+
             prev_active_windows = current_active
-            
+
+        return kept_records, stats
+
+    def write_record_table(self, output_conn, kept_records):
+        inserted_records = []
+
+        cursor = output_conn.cursor()
+        for record in kept_records:
+            cursor.execute(
+                """
+                INSERT INTO records
+                (timestamp, app_name, window_title, focused, ocr_text, cleaned_text,
+                 ocr_quality_score, content_kind, trigger_reason, raw_frame_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["timestamp"],
+                    record["app"],
+                    record["window"],
+                    record["focused"],
+                    record["text"],
+                    record["cleaned_text"],
+                    record["ocr_quality_score"],
+                    record["content_kind"],
+                    record["trigger"],
+                    record["frame_id"],
+                )
+            )
+            memory_id = cursor.lastrowid
+            inserted_records.append({
+                "id": memory_id,
+                "timestamp": record["timestamp"],
+                "timestamp_dt": record["timestamp_dt"],
+                "app": record["app"],
+                "window": record["window"],
+                "focused": record["focused"],
+                "cleaned_text": record["cleaned_text"],
+                "ocr_quality_score": record["ocr_quality_score"],
+                "content_kind": record["content_kind"],
+                "trigger": record["trigger"],
+            })
+
         output_conn.commit()
-        segment_stats = self.write_segment_table(
-            output_conn,
+
+        return inserted_records
+
+    def process_cleaning(
+        self,
+        sp_rows,
+        oc_events,
+        output_conn,
+        min_quality=None,
+        segment_gap_minutes=None,
+        max_segment_minutes=None,
+        focus_switch_split_minutes=None,
+        segment_config=None,
+        view_config=None
+    ):
+        print("Running scheduling simulation & deduplication...")
+        segment_gap_minutes = self.segment_gap_minutes if segment_gap_minutes is None else segment_gap_minutes
+        max_segment_minutes = self.max_segment_minutes if max_segment_minutes is None else max_segment_minutes
+        focus_switch_split_minutes = (
+            self.focus_switch_split_minutes
+            if focus_switch_split_minutes is None
+            else focus_switch_split_minutes
+        )
+
+        kept_records, stats = self.select_records_to_keep(sp_rows, oc_events, min_quality=min_quality)
+        stats.update({
+            "segments": 0,
+            "views": 0,
+            "segment_llm_generation_count": 0,
+            "segment_llm_failed_count": 0,
+            "view_llm_generation_count": 0,
+            "view_llm_failed_count": 0,
+        })
+        if not kept_records:
+            return stats
+
+        inserted_records = self.write_record_table(output_conn, kept_records)
+        segment_llm_budget = segment_config.get("llm_budget", 0) if segment_config else 0
+        view_llm_budget = view_config.get("llm_budget", 0) if view_config else 0
+
+        segment_record_entries = self.generate_segment_record_entries(
             inserted_records,
             segment_gap_minutes,
             max_segment_minutes=max_segment_minutes,
             focus_switch_split_minutes=focus_switch_split_minutes,
-            segment_config=segment_config,
-            view_config=view_config
         )
-        stats["segments"] = segment_stats["segments"]
-        stats["views"] = segment_stats["views"]
-        stats["segment_llm_generation_count"] = segment_stats["segment_llm_generation_count"]
-        stats["segment_llm_failed_count"] = segment_stats["segment_llm_failed_count"]
-        stats["view_llm_generation_count"] = segment_stats["view_llm_generation_count"]
-        stats["view_llm_failed_count"] = segment_stats["view_llm_failed_count"]
+
+        view_entries, view_llm_stats = self.generate_view_entries(
+            segment_record_entries,
+            view_config=view_config,
+            llm_budget=view_llm_budget,
+        )
+
+        segment_entries, segment_llm_stats = self.generate_segment_entries(
+            segment_record_entries,
+            view_entries,
+            segment_config=segment_config,
+            llm_budget=segment_llm_budget,
+        )
+
+        segment_id_by_key = self.write_segment_table(
+            output_conn,
+            segment_entries,
+        )
+        view_count = self.write_view_table(
+            output_conn,
+            view_entries,
+            segment_id_by_key,
+        )
+        stats["segments"] = len(segment_entries)
+        stats["views"] = view_count
+        stats.update(segment_llm_stats)
+        stats.update(view_llm_stats)
         return stats
 
-    def build_llm_segment_payload(self, segment_summary, records):
+    def build_llm_segment_payload(self, segment_summary, records, view_infos=None):
+        view_infos = view_infos or []
+        view_evidence = []
+        for view_info in view_infos:
+            view_evidence.append({
+                "app_name": view_info.get("app_name"),
+                "window_title": view_info.get("window_title"),
+                "content_kind": view_info.get("content_kind"),
+                "time_range": {
+                    "start": view_info.get("start_timestamp"),
+                    "end": view_info.get("end_timestamp"),
+                },
+                "local_digest": view_info.get("digest_text"),
+                "llm_digest": view_info.get("llm_digest_text"),
+                "topics": json.loads(view_info.get("topics_json") or "[]"),
+                "artifacts": json.loads(view_info.get("artifacts_json") or "[]"),
+                "confidence": view_info.get("confidence"),
+                "record_count": view_info.get("record_count"),
+            })
+
         evidence = []
         representative = sorted(
             records,
@@ -963,6 +1062,7 @@ class PMECleaner:
             "artifacts": json.loads(segment_summary["artifacts_json"]),
             "local_summary": segment_summary["summary"],
             "local_actions": json.loads(segment_summary["actions_json"]),
+            "views": view_evidence,
             "evidence": evidence,
         }
 
@@ -1075,8 +1175,8 @@ class PMECleaner:
         normalized["confidence"] = max(0.0, min(1.0, normalized["confidence"]))
         return normalized
 
-    def update_segment_using_llm(self, cursor, segment_id, segment_summary, records, config):
-        payload = self.build_llm_segment_payload(segment_summary, records)
+    def generate_segment_using_llm(self, segment_summary, records, config, view_infos=None):
+        payload = self.build_llm_segment_payload(segment_summary, records, view_infos=view_infos)
         payload_hash = self.hash_llm_payload(payload)
         now = datetime.now(timezone.utc).isoformat()
 
@@ -1085,36 +1185,27 @@ class PMECleaner:
             llm_result = self.normalize_llm_summary(
                 self.call_json_llm(SEGMENT_LLM_SYSTEM_PROMPT, user_prompt, config)
             )
-            cursor.execute(
-                """
-                UPDATE segments
-                SET llm_summary_json = ?, llm_summary_text = ?, llm_model = ?,
-                    llm_status = ?, llm_error = NULL, llm_hash = ?, llm_updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    json.dumps(llm_result, ensure_ascii=False),
-                    llm_result.get("summary", ""),
-                    config.get("llm_model"),
-                    "ok",
-                    payload_hash,
-                    now,
-                    segment_id,
-                ),
-            )
-            return True, None
+            return {
+                "llm_summary_json": json.dumps(llm_result, ensure_ascii=False),
+                "llm_summary_text": llm_result.get("summary", ""),
+                "llm_model": config.get("llm_model"),
+                "llm_status": "ok",
+                "llm_error": None,
+                "llm_hash": payload_hash,
+                "llm_updated_at": now,
+            }, True, None
         except Exception as e:
-            cursor.execute(
-                """
-                UPDATE segments
-                SET llm_model = ?, llm_status = ?, llm_error = ?, llm_hash = ?, llm_updated_at = ?
-                WHERE id = ?
-                """,
-                (config.get("llm_model"), "error", str(e)[:1000], payload_hash, now, segment_id),
-            )
-            return False, str(e)
+            return {
+                "llm_summary_json": None,
+                "llm_summary_text": None,
+                "llm_model": config.get("llm_model"),
+                "llm_status": "error",
+                "llm_error": str(e)[:1000],
+                "llm_hash": payload_hash,
+                "llm_updated_at": now,
+            }, False, str(e)
 
-    def generate_view_using_llm(self, cursor, view_id, local_digest, records, config):
+    def generate_view_using_llm(self, local_digest, records, config):
         payload = build_view_llm_payload(local_digest, records)
         payload_hash = self.hash_llm_payload(payload)
         now = datetime.now(timezone.utc).isoformat()
@@ -1125,182 +1216,266 @@ class PMECleaner:
                 self.call_json_llm(VIEW_LLM_SYSTEM_PROMPT, user_prompt, config)
             )
             llm_text = llm_result.get("summary") or llm_result.get("main_content", "")
-            cursor.execute(
-                """
-                UPDATE views
-                SET llm_digest_json = ?, llm_digest_text = ?, llm_model = ?,
-                    llm_status = ?, llm_error = NULL, llm_hash = ?, llm_updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    json.dumps(llm_result, ensure_ascii=False),
-                    llm_text,
-                    config.get("llm_model"),
-                    "ok",
-                    payload_hash,
-                    now,
-                    view_id,
-                ),
-            )
-            return True, None
+            return {
+                "llm_digest_json": json.dumps(llm_result, ensure_ascii=False),
+                "llm_digest_text": llm_text,
+                "llm_model": config.get("llm_model"),
+                "llm_status": "ok",
+                "llm_error": None,
+                "llm_hash": payload_hash,
+                "llm_updated_at": now,
+            }, True, None
         except Exception as e:
-            cursor.execute(
-                """
-                UPDATE views
-                SET llm_model = ?, llm_status = ?, llm_error = ?, llm_hash = ?, llm_updated_at = ?
-                WHERE id = ?
-                """,
-                (config.get("llm_model"), "error", str(e)[:1000], payload_hash, now, view_id),
-            )
-            return False, str(e)
+            return {
+                "llm_digest_json": None,
+                "llm_digest_text": None,
+                "llm_model": config.get("llm_model"),
+                "llm_status": "error",
+                "llm_error": str(e)[:1000],
+                "llm_hash": payload_hash,
+                "llm_updated_at": now,
+            }, False, str(e)
 
-    def write_segment_table(
+    def generate_segment_info(self, records, segment_config=None, view_infos=None):
+        view_infos = view_infos or []
+        info = summarize_segment(records, view_infos=view_infos)
+        info.update({
+            "llm_summary_json": None,
+            "llm_summary_text": None,
+            "llm_model": None,
+            "llm_status": None,
+            "llm_error": None,
+            "llm_hash": None,
+            "llm_updated_at": None,
+        })
+        if segment_config:
+            llm_fields, ok, error = self.generate_segment_using_llm(
+                info,
+                records,
+                segment_config,
+                view_infos=view_infos,
+            )
+            info.update(llm_fields)
+            return info, ok, error
+        return info, None, None
+
+    def generate_segment_record_entries(
         self,
-        output_conn,
         inserted_records,
         gap_minutes,
         max_segment_minutes=30,
         focus_switch_split_minutes=5,
-        segment_config=None,
-        view_config=None
     ):
-        cursor = output_conn.cursor()
-        segments = group_segments_from_records(
+        segment_record_groups = group_segments_from_records(
             inserted_records,
             gap_minutes,
             max_segment_minutes=max_segment_minutes,
             focus_switch_split_minutes=focus_switch_split_minutes,
         )
-        segment_llm_generation_count = 0
-        segment_llm_failed_count = 0
-        segment_llm_enabled = bool(segment_config and segment_config.get("enable_LLM_summary"))
-        llm_budget = segment_config.get("llm_budget", 0) if segment_config else 0
+        return [
+            {
+                "segment_key": segment_key,
+                "records": records,
+            }
+            for segment_key, records in enumerate(segment_record_groups)
+        ]
 
-        view_written_count = 0
-        view_llm_generation_count = 0
-        view_llm_failed_count = 0
-        view_llm_enabled = bool(view_config and view_config.get("enable_LLM_summary"))
-        view_llm_budget = view_config.get("llm_budget", 0) if view_config else 0
+    def group_view_infos_by_segment(self, view_entries):
+        view_infos_by_segment = {}
+        for view_entry in view_entries:
+            view_infos_by_segment.setdefault(view_entry["segment_key"], []).append(view_entry["info"])
+        return view_infos_by_segment
 
-        for records in segments:
-            summary = summarize_segment(records)
-            cursor.execute(
-                """
-                INSERT INTO segments
-                (start_timestamp, end_timestamp, duration_seconds, activity_type, project_hint,
-                 app_names, window_titles, summary, actions_json, artifacts_json,
-                 evidence_ids_json, confidence, record_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    summary["start_timestamp"],
-                    summary["end_timestamp"],
-                    summary["duration_seconds"],
-                    summary["activity_type"],
-                    summary["project_hint"],
-                    summary["app_names"],
-                    summary["window_titles"],
-                    summary["summary"],
-                    summary["actions_json"],
-                    summary["artifacts_json"],
-                    summary["evidence_ids_json"],
-                    summary["confidence"],
-                    summary["record_count"],
-                ),
-            )
-            segment_id = cursor.lastrowid
-            view_save_stats = self.write_view_table(
-                cursor,
-                segment_id,
+    def generate_segment_entries(
+        self,
+        segment_record_entries,
+        view_entries,
+        segment_config=None,
+        llm_budget=0,
+    ):
+        view_infos_by_segment = self.group_view_infos_by_segment(view_entries)
+        segment_entries = []
+        llm_generation_count = 0
+        llm_failed_count = 0
+        llm_enabled = bool(segment_config and segment_config.get("enable_LLM_summary"))
+        for segment_record_entry in segment_record_entries:
+            segment_key = segment_record_entry["segment_key"]
+            records = segment_record_entry["records"]
+            view_infos = view_infos_by_segment.get(segment_key, [])
+            use_llm = llm_enabled and llm_generation_count + llm_failed_count < llm_budget
+            if use_llm:
+                print(
+                    f"Summarizing segment candidate {segment_key + 1} with LLM "
+                        f"({llm_generation_count + llm_failed_count + 1}/{llm_budget})..."
+                )
+            info, ok, error = self.generate_segment_info(
                 records,
-                view_llm_config=view_config if view_llm_enabled else None,
-                remaining_llm_budget=max(0, view_llm_budget - view_llm_generation_count - view_llm_failed_count),
+                segment_config if use_llm else None,
+                view_infos=view_infos,
             )
-            view_written_count += view_save_stats["written"]
-            view_llm_generation_count += view_save_stats["llm_summarized"]
-            view_llm_failed_count += view_save_stats["llm_failed"]
-
-            if segment_llm_enabled and segment_llm_generation_count + segment_llm_failed_count < llm_budget:
-                print(f"Summarizing segment {segment_id} with LLM ({segment_llm_generation_count + segment_llm_failed_count + 1}/{llm_budget})...")
-                ok, error = self.update_segment_using_llm(cursor, segment_id, summary, records, segment_config)
-                if ok:
-                    segment_llm_generation_count += 1
-                else:
-                    segment_llm_failed_count += 1
-                    print(f"LLM summary failed for segment {segment_id}: {error}")
-
-        output_conn.commit()
-        return {
-            "segments": len(segments),
-            "views": view_written_count,
-            "segment_llm_generation_count": segment_llm_generation_count,
-            "segment_llm_failed_count": segment_llm_failed_count,
-            "view_llm_generation_count": view_llm_generation_count,
-            "view_llm_failed_count": view_llm_failed_count,
+            if ok is True:
+                llm_generation_count += 1
+            elif ok is False:
+                llm_failed_count += 1
+                print(f"LLM summary failed for segment candidate {segment_key + 1}: {error}")
+            segment_entries.append({
+                "segment_key": segment_key,
+                "info": info,
+                "records": records,
+            })
+        return segment_entries, {
+            "segment_llm_generation_count": llm_generation_count,
+            "segment_llm_failed_count": llm_failed_count,
         }
 
-    def write_view_table(self, cursor, segment_id, records, view_llm_config=None, remaining_llm_budget=0):
+    def save_segment(self, cursor, segment_summary):
+        cursor.execute(
+            """
+            INSERT INTO segments
+            (start_timestamp, end_timestamp, duration_seconds, activity_type, project_hint,
+             app_names, window_titles, summary, actions_json, artifacts_json,
+             evidence_ids_json, llm_summary_json, llm_summary_text, llm_model, llm_status,
+             llm_error, llm_hash, llm_updated_at, confidence, record_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                segment_summary["start_timestamp"],
+                segment_summary["end_timestamp"],
+                segment_summary["duration_seconds"],
+                segment_summary["activity_type"],
+                segment_summary["project_hint"],
+                segment_summary["app_names"],
+                segment_summary["window_titles"],
+                segment_summary["summary"],
+                segment_summary["actions_json"],
+                segment_summary["artifacts_json"],
+                segment_summary["evidence_ids_json"],
+                segment_summary.get("llm_summary_json"),
+                segment_summary.get("llm_summary_text"),
+                segment_summary.get("llm_model"),
+                segment_summary.get("llm_status"),
+                segment_summary.get("llm_error"),
+                segment_summary.get("llm_hash"),
+                segment_summary.get("llm_updated_at"),
+                segment_summary["confidence"],
+                segment_summary["record_count"],
+            ),
+        )
+        return cursor.lastrowid
+
+    def generate_view_record_entries(self, records):
         grouped_records = {}
         for record in records:
             key = (record.get("app"), record.get("window"))
             grouped_records.setdefault(key, []).append(record)
 
-        written = 0
-        llm_summarized = 0
-        llm_failed = 0
-        for group_records in grouped_records.values():
-            digest = build_view_digest(segment_id, group_records)
-            cursor.execute(
-                """
-                INSERT INTO views
-                (segment_id, app_name, window_title, content_kind, start_timestamp, end_timestamp,
-                 digest_text, representative_text, topics_json, entities_json, artifacts_json,
-                 evidence_ids_json, confidence, record_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    digest["segment_id"],
-                    digest["app_name"],
-                    digest["window_title"],
-                    digest["content_kind"],
-                    digest["start_timestamp"],
-                    digest["end_timestamp"],
-                    digest["digest_text"],
-                    digest["representative_text"],
-                    digest["topics_json"],
-                    digest["entities_json"],
-                    digest["artifacts_json"],
-                    digest["evidence_ids_json"],
-                    digest["confidence"],
-                    digest["record_count"],
-                ),
-            )
-            view_id = cursor.lastrowid
-            written += 1
+        return grouped_records
 
-            if view_llm_config and llm_summarized + llm_failed < remaining_llm_budget:
-                print(
-                    f"Summarizing view {view_id} with LLM "
-                    f"({llm_summarized + llm_failed + 1}/{remaining_llm_budget})..."
-                )
-                ok, error = self.generate_view_using_llm(
-                    cursor,
-                    view_id,
-                    digest,
-                    group_records,
-                    view_llm_config,
-                )
-                if ok:
-                    llm_summarized += 1
-                else:
-                    llm_failed += 1
-                    print(f"LLM view summary failed for {view_id}: {error}")
+    def generate_view_info(self, records, view_config):
+        info = summarize_view(records)
+        info.update({
+            "llm_digest_json": None,
+            "llm_digest_text": None,
+            "llm_model": None,
+            "llm_status": None,
+            "llm_error": None,
+            "llm_hash": None,
+            "llm_updated_at": None,
+        })
+        if view_config:
+            llm_fields, ok, error = self.generate_view_using_llm(info, records, view_config)
+            info.update(llm_fields)
+            return info, ok, error
+        return info, None, None
 
-        return {
-            "written": written,
-            "llm_summarized": llm_summarized,
-            "llm_failed": llm_failed,
+    def generate_view_entries(self, segment_entries, view_config=None, llm_budget=0):
+        view_entries = []
+        llm_generation_count = 0
+        llm_failed_count = 0
+        llm_enabled = bool(view_config and view_config.get("enable_LLM_summary"))
+        for segment_entry in segment_entries:
+            grouped_records = self.generate_view_record_entries(segment_entry["records"])
+            for view_records in grouped_records.values():
+                use_llm = llm_enabled and llm_generation_count + llm_failed_count < llm_budget
+                if use_llm:
+                    print(
+                        f"Summarizing view candidate {len(view_entries) + 1} with LLM "
+                        f"({llm_generation_count + llm_failed_count + 1}/{llm_budget})..."
+                    )
+                info, ok, error = self.generate_view_info(view_records, view_config if use_llm else None)
+                if ok is True:
+                    llm_generation_count += 1
+                elif ok is False:
+                    llm_failed_count += 1
+                    print(f"LLM view summary failed for candidate {len(view_entries) + 1}: {error}")
+                view_entries.append({
+                    "segment_key": segment_entry["segment_key"],
+                    "info": info,
+                    "records": view_records,
+                })
+        return view_entries, {
+            "view_llm_generation_count": llm_generation_count,
+            "view_llm_failed_count": llm_failed_count,
         }
+
+    def save_view(self, cursor, view_digest):
+        cursor.execute(
+            """
+            INSERT INTO views
+            (segment_id, app_name, window_title, content_kind, start_timestamp, end_timestamp,
+             digest_text, representative_text, topics_json, entities_json, artifacts_json,
+             evidence_ids_json, llm_digest_json, llm_digest_text, llm_model, llm_status,
+             llm_error, llm_hash, llm_updated_at, confidence, record_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                view_digest["segment_id"],
+                view_digest["app_name"],
+                view_digest["window_title"],
+                view_digest["content_kind"],
+                view_digest["start_timestamp"],
+                view_digest["end_timestamp"],
+                view_digest["digest_text"],
+                view_digest["representative_text"],
+                view_digest["topics_json"],
+                view_digest["entities_json"],
+                view_digest["artifacts_json"],
+                view_digest["evidence_ids_json"],
+                view_digest.get("llm_digest_json"),
+                view_digest.get("llm_digest_text"),
+                view_digest.get("llm_model"),
+                view_digest.get("llm_status"),
+                view_digest.get("llm_error"),
+                view_digest.get("llm_hash"),
+                view_digest.get("llm_updated_at"),
+                view_digest["confidence"],
+                view_digest["record_count"],
+            ),
+        )
+        return cursor.lastrowid
+
+    def write_segment_table(
+        self,
+        output_conn,
+        segment_entries,
+    ):
+        cursor = output_conn.cursor()
+        segment_id_by_key = {}
+        for segment_entry in segment_entries:
+            summary = segment_entry["info"]
+            segment_id = self.save_segment(cursor, summary)
+            segment_id_by_key[segment_entry["segment_key"]] = segment_id
+        output_conn.commit()
+        return segment_id_by_key
+
+    def write_view_table(self, output_conn, view_entries, segment_id_by_key):
+        cursor = output_conn.cursor()
+        for view_entry in view_entries:
+            view_info = dict(view_entry["info"])
+            view_info["segment_id"] = segment_id_by_key[view_entry["segment_key"]]
+            self.save_view(cursor, view_info)
+        output_conn.commit()
+        return len(view_entries)
 
     def filter_incomplete_data(self, sp_rows, oc_events, start_time, end_time, bucket_minutes=10):
         if not oc_events:
