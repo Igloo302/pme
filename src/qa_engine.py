@@ -19,47 +19,23 @@ class PMEQueryEngine:
             
         conn = sqlite3.connect(self.cleaned_db)
         cursor = conn.cursor()
-
-        cursor.execute("PRAGMA table_info(cleaned_memories)")
-        columns = {row[1] for row in cursor.fetchall()}
-        has_enriched_columns = {"cleaned_text", "ocr_quality_score", "content_kind"}.issubset(columns)
-        
-        if has_enriched_columns:
-            sql = """
-            SELECT
-                m.timestamp,
-                m.app_name,
-                m.window_title,
-                m.ocr_text,
-                m.cleaned_text,
-                m.ocr_quality_score,
-                m.content_kind,
-                m.trigger_reason,
-                m.focused
-            FROM cleaned_memories_fts fts
-            JOIN cleaned_memories m ON m.id = fts.id
-            WHERE cleaned_memories_fts MATCH ?
-            ORDER BY rank ASC
-            LIMIT ?
-            """
-        else:
-            sql = """
-            SELECT
-                m.timestamp,
-                m.app_name,
-                m.window_title,
-                m.ocr_text,
-                m.ocr_text AS cleaned_text,
-                NULL AS ocr_quality_score,
-                NULL AS content_kind,
-                m.trigger_reason,
-                m.focused
-            FROM cleaned_memories_fts fts
-            JOIN cleaned_memories m ON m.id = fts.id
-            WHERE cleaned_memories_fts MATCH ?
-            ORDER BY rank ASC
-            LIMIT ?
-            """
+        sql = """
+        SELECT
+            m.timestamp,
+            m.app_name,
+            m.window_title,
+            m.ocr_text,
+            m.cleaned_text,
+            m.ocr_quality_score,
+            m.content_kind,
+            m.trigger_reason,
+            m.focused
+        FROM records_fts fts
+        JOIN records m ON m.id = fts.id
+        WHERE records_fts MATCH ?
+        ORDER BY rank ASC
+        LIMIT ?
+        """
         
         # Simple FTS5 query parser
         keywords = " OR ".join([f'"{w}"' for w in query.split() if w.strip()])
@@ -76,25 +52,13 @@ class PMEQueryEngine:
             SELECT timestamp, app_name, window_title, ocr_text,
                    COALESCE(cleaned_text, ocr_text) AS cleaned_text,
                    ocr_quality_score, content_kind, trigger_reason, focused
-            FROM cleaned_memories
+            FROM records
             WHERE ocr_text LIKE ? OR COALESCE(cleaned_text, '') LIKE ? OR app_name LIKE ? OR window_title LIKE ?
             ORDER BY timestamp DESC
             LIMIT ?
             """
             pattern = f"%{query}%"
-            if has_enriched_columns:
-                cursor.execute(fallback_sql, (pattern, pattern, pattern, pattern, limit))
-            else:
-                fallback_sql = """
-                SELECT timestamp, app_name, window_title, ocr_text,
-                       ocr_text AS cleaned_text, NULL AS ocr_quality_score, NULL AS content_kind,
-                       trigger_reason, focused
-                FROM cleaned_memories
-                WHERE ocr_text LIKE ? OR app_name LIKE ? OR window_title LIKE ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """
-                cursor.execute(fallback_sql, (pattern, pattern, pattern, limit))
+            cursor.execute(fallback_sql, (pattern, pattern, pattern, pattern, limit))
             rows = cursor.fetchall()
             
         conn.close()

@@ -172,7 +172,7 @@ Then edit `config.yaml` to match your local paths:
 database:
   screenpipe_db: "~/.screenpipe/db.sqlite"      # adjust if different
   openchronicle_db: "~/.openchronicle/index.db" # adjust if different
-  cleaned_db: "~/pme_cleaned_memories.db"        # where to write output
+  cleaned_db: "~/pme_memory.db"                  # where to write output
 
 screenpipe:
   api_url: "http://localhost:3030"
@@ -250,11 +250,13 @@ The cleaner also groups high-quality OCR snapshots into higher-level work segmen
 python pme_cli.py segments --limit 10
 ```
 
-Optional segment-level LLM summaries can be generated during cleaning:
+Optional segment and view LLM summaries can be generated during cleaning by setting
+`enable_LLM_summary: true` under `segment_generation` and/or `view_generation` in
+`config.yaml`:
 
 ```bash
 export DEEPSEEK_API_KEY="..."
-python pme_cli.py clean --enable-llm-summary --llm-segment-budget 20
+python pme_cli.py clean
 ```
 
 ---
@@ -271,7 +273,7 @@ You can watch it live on the Dashboard's **PME Auto-Cleaner** card.
 
 1. **Load** OCR frames from Screenpipe for the target time window.
 2. **Load** AX tree events from OpenChronicle for the same window.
-3. **Bucket filter** — split time into 10-minute buckets. Discard any Screenpipe bucket that has zero matching OpenChronicle events (likely a recording gap where only one tool was running — incomplete data).
+3. **Bucket filter** — split time into 10-minute buckets. When OpenChronicle events exist, discard Screenpipe buckets with zero matching OpenChronicle events; when only Screenpipe data exists, keep Screenpipe rows and run in Screenpipe-only mode.
 4. **State machine simulation** — iterate through remaining frames second by second, deciding whether to keep each record based on:
    - Is this window currently focused? → high-freq rule (2s)
    - Did focus just switch? → immediate snapshot
@@ -279,8 +281,9 @@ You can watch it live on the Dashboard's **PME Auto-Cleaner** card.
    - Otherwise → low-freq rule (30s)
 5. **OCR normalization + quality scoring** — remove menu/status noise, keep `cleaned_text`, score OCR usefulness, and classify content as coding, meeting, chat, writing, browsing, system, or other.
 6. **Content dedup** — if normalized OCR text hasn't changed since the last stored record for this window, skip it.
-7. **Work segment reconstruction** — group cleaned records into `work_segments` with local summaries, artifacts, evidence ids, confidence scores, and optional LLM summaries.
-8. **Write** kept records to `cleaned_memories` table with FTS5 triggers for fast full-text search.
+7. **Segment reconstruction** — group cleaned records into `segments` with local summaries, artifacts, evidence ids, confidence scores, and optional LLM summaries.
+8. **View reconstruction** — group each segment by `app_name + window_title` into `views`, with local digests and optional LLM summaries.
+9. **Write** kept records to `records` table with `records_fts` triggers for fast full-text search.
 
 ---
 

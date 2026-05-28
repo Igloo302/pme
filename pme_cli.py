@@ -10,24 +10,6 @@ from src.qa_engine import PMEQueryEngine
 from gui import register_routes
 
 
-def build_segment_llm_config(args):
-    config = get_config()
-    segment_cfg = config.get("work_segments", {})
-    segment_llm_cfg = segment_cfg.get("llm", {})
-    if not bool(segment_cfg.get("enable_LLM_summary", False)):
-        return None
-
-    api_key_env = segment_llm_cfg.get("api_key_env", "DEEPSEEK_API_KEY")
-    return {
-        "enabled": True,
-        "segment_budget": max(0, getattr(args, "llm_segment_budget", segment_llm_cfg.get("segment_budget", 50))),
-        "model": segment_llm_cfg.get("model", "deepseek-v4-flash"),
-        "base_url": segment_llm_cfg.get("base_url", "https://api.deepseek.com/v1"),
-        "api_key_env": api_key_env,
-        "api_key": os.environ.get(api_key_env) or segment_llm_cfg.get("api_key"),
-        "timeout": getattr(args, "llm_timeout", segment_llm_cfg.get("timeout", 60)),
-    }
-
 def print_banner():
     banner = """
 ======================================================================
@@ -47,7 +29,6 @@ def handle_clean(args):
         segment_gap_minutes=args.segment_gap_minutes,
         max_segment_minutes=args.max_segment_minutes,
         focus_switch_split_minutes=args.focus_switch_split_minutes,
-        llm_config=build_segment_llm_config(args),
     )
 
 def handle_ask(args):
@@ -88,18 +69,18 @@ def handle_segments(args):
     conn = sqlite3.connect(cleaned_db)
     cursor = conn.cursor()
     table_exists = cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='work_segments'"
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='segments'"
     ).fetchone()
     if not table_exists:
         conn.close()
-        print("No work_segments table found. Please run a clean with the merged segment engine.")
+        print("No segments table found. Please run a clean with the merged segment engine.")
         return
 
     rows = cursor.execute(
         """
         SELECT start_timestamp, end_timestamp, duration_seconds, activity_type,
                summary, llm_summary_text, confidence, record_count
-        FROM work_segments
+        FROM segments
         ORDER BY start_timestamp DESC
         LIMIT ?
         """,
@@ -142,7 +123,7 @@ def handle_status(args):
                 elif "openchronicle" in path.lower() or "index.db" in path:
                     records = cursor.execute("SELECT count(*) FROM captures").fetchone()[0]
                 else:
-                    records = cursor.execute("SELECT count(*) FROM cleaned_memories").fetchone()[0]
+                    records = cursor.execute("SELECT count(*) FROM records").fetchone()[0]
                 conn.close()
             except Exception:
                 records = "Unknown"
@@ -178,7 +159,6 @@ def main():
     parser_clean.add_argument("--segment-gap-minutes", type=int, default=None, help="Start a new work segment after this many quiet minutes")
     parser_clean.add_argument("--max-segment-minutes", type=int, default=None, help="Force a new work segment after this many minutes")
     parser_clean.add_argument("--focus-switch-split-minutes", type=int, default=None, help="Split after this many minutes on focused app/window switch")
-    parser_clean.add_argument("--llm-timeout", type=int, default=60, help="Timeout in seconds for each segment LLM request")
     
     # 2. Ask command
     parser_ask = subparsers.add_parser("ask", help="Query PME memories using FTS5 and LLM RAG")

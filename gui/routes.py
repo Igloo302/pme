@@ -606,9 +606,9 @@ def register_routes(app):
             if pme_size > 0:
                 conn = sqlite3.connect(pme_db_path)
                 cursor = conn.cursor()
-                pme_count = cursor.execute("SELECT count(*) FROM cleaned_memories").fetchone()[0]
+                pme_count = cursor.execute(f"SELECT count(*) FROM records").fetchone()[0]
                 try:
-                    segment_count = cursor.execute("SELECT count(*) FROM work_segments").fetchone()[0]
+                    segment_count = cursor.execute(f"SELECT count(*) FROM segments").fetchone()[0]
                 except Exception:
                     segment_count = 0
                 conn.close()
@@ -639,7 +639,7 @@ def register_routes(app):
                 SELECT start_timestamp, end_timestamp, duration_seconds, activity_type,
                        app_names, window_titles, summary, actions_json, artifacts_json,
                        llm_summary_text, confidence, record_count
-                FROM work_segments
+                FROM segments
                 ORDER BY start_timestamp DESC
                 LIMIT ?
                 """,
@@ -756,7 +756,7 @@ def register_routes(app):
             return send_file(
                 file_path,
                 as_attachment=True,
-                download_name="pme_cleaned_memories.db",
+                download_name="pme_memory.db",
                 mimetype="application/x-sqlite3"
             )
         except Exception as e:

@@ -15,7 +15,7 @@ database:
   
   # Where PME writes the cleaned, deduplicated output database
   # This is the file you'll use for RAG / Q&A queries
-  cleaned_db: "./pme_cleaned_memories.db"
+  cleaned_db: "./pme_memory.db"
 
 # --- Screenpipe Settings ---
 screenpipe:
@@ -69,10 +69,20 @@ cleaning_policy:
   # Drop records whose normalized OCR has fewer useful letters/digits/CJK chars
   min_useful_chars: 8
 
-# --- Work Segment Reconstruction ---
+# --- View Reconstruction ---
+view_generation:
+  enable_LLM_summary: true
+  # LLM settings used when enable_LLM_summary is true
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  llm_budget: 10
+  llm_timeout: 60
+
+# --- Segment Reconstruction ---
 # Groups cleaned OCR snapshots into higher-level activity blocks.
-work_segments:
-  # Enable LLM summaries for work segments during cleaning
+segment_generation:
+  # Enable LLM summaries for segments during cleaning
   enable_LLM_summary: true
 
   # Start a new segment after this many minutes without related activity
@@ -84,13 +94,12 @@ work_segments:
   # Split after a focused app/window switch lasts longer than this many minutes
   focus_switch_split_minutes: 5
 
-  # Optional, only used with `pme_cli.py clean --enable-llm-summary`
-  llm:
-    model: "deepseek-v4-flash"
-    base_url: "https://api.deepseek.com/v1"
-    api_key_env: "DEEPSEEK_API_KEY"
-    segment_budget: 50
-    timeout: 60
+  # LLM settings used when enable_LLM_summary is true
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  llm_budget: 50
+  llm_timeout: 60
 
 # --- Web UI ---
 gui:
