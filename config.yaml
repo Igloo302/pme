@@ -72,6 +72,10 @@ cleaning_policy:
 # --- View Reconstruction ---
 view_generation:
   enable_LLM_summary: true
+  # Group records from the same app/window into one view while gaps stay under this threshold.
+  gap_minutes: 8
+  # Force a new view after this many minutes even if the same app/window remains active.
+  max_minutes: 30
   # LLM settings used when enable_LLM_summary is true
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
@@ -101,9 +105,9 @@ segment_generation:
   llm_budget: 20
   llm_timeout: 60
 
-# --- Cross-time Memory Topic Reconstruction ---
-# Groups semantically related views across non-continuous time ranges.
-memory_topic_generation:
+# --- Cross-time Workstream Reconstruction ---
+# Groups related views across non-continuous time ranges within a work context.
+workstream_generation:
   enabled: true
   min_relevance: 0.35
   title_similarity_threshold: 0.82
