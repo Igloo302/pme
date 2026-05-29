@@ -76,7 +76,7 @@ view_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 50
+  llm_budget: 20
   llm_timeout: 60
 
 # --- Segment Reconstruction ---
@@ -98,7 +98,7 @@ segment_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 50
+  llm_budget: 20
   llm_timeout: 60
 
 # --- Cross-time Memory Topic Reconstruction ---
