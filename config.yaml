@@ -71,17 +71,10 @@ cleaning_policy:
 
 # --- View Reconstruction ---
 view_generation:
-  enable_LLM_summary: true
   # Group records from the same app/window into one view while gaps stay under this threshold.
   gap_minutes: 8
   # Force a new view after this many minutes even if the same app/window remains active.
   max_minutes: 30
-  # LLM settings used when enable_LLM_summary is true
-  llm_model: "deepseek-v4-flash"
-  llm_base_url: "https://api.deepseek.com/v1"
-  llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 20
-  llm_timeout: 60
 
 # --- Segment Reconstruction ---
 # Groups cleaned OCR snapshots into higher-level activity blocks.
@@ -102,17 +95,33 @@ segment_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 20
+  llm_budget: 50
   llm_timeout: 60
 
 # --- Cross-time Workstream Reconstruction ---
 # Groups related views across non-continuous time ranges within a work context.
 workstream_generation:
   enabled: true
+  # Enable one LLM summary update per changed workstream after all views in the current batch are matched.
+  enable_LLM_summary: true
   min_relevance: 0.35
   title_similarity_threshold: 0.82
-  semantic_similarity_threshold: 0.35
+  max_member_views_for_matching: 12
+  max_views_for_summary: 24
+  pair_min_score: 0.45
+  min_support_ratio: 0.5
+  top_k: 3
+  min_top_k_avg: 0.55
+  cluster_seed_min_score: 0.65
+  cluster_merge_passes: 1
+  cluster_merge_support_ratio: 0.5
+  cluster_merge_min_score: 0.35
   max_time_gap_days: 30
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  llm_budget: 50
+  llm_timeout: 60
 
 # --- Web UI ---
 gui:
