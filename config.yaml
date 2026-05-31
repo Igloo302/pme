@@ -95,12 +95,12 @@ segment_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 50
+  llm_budget: 10
   llm_timeout: 60
 
-# --- Cross-time Workstream Reconstruction ---
+# --- Cross-time Window Workstream Reconstruction ---
 # Groups related views across non-continuous time ranges within a work context.
-workstream_generation:
+window_workstream_generation:
   enabled: true
   # Enable one LLM summary update per changed workstream after all views in the current batch are matched.
   enable_LLM_summary: true
@@ -120,7 +120,30 @@ workstream_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 50
+  llm_budget: 20
+  llm_timeout: 60
+
+# --- Cross-window Task Workstream Reconstruction ---
+# Groups related window_workstream rows into task-level workstreams across apps/windows.
+task_workstream_generation:
+  enabled: true
+  # Enable one LLM summary update per changed task_workstream after window_workstream matching finishes.
+  enable_LLM_summary: true
+  min_relevance: 0.35
+  semantic_similarity_threshold: 0.28
+  entity_text_min_score: 0.06
+  max_member_window_workstreams_for_matching: 12
+  max_window_workstreams_for_summary: 16
+  pair_min_score: 0.40
+  min_support_ratio: 0.5
+  top_k: 3
+  min_top_k_avg: 0.50
+  cluster_seed_min_score: 0.55
+  max_time_gap_days: 30
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  llm_budget: 20
   llm_timeout: 60
 
 # --- Web UI ---

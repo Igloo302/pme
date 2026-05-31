@@ -594,6 +594,7 @@ def register_routes(app):
         pme_count = 0
         segment_count = 0
         workstream_count = 0
+        task_workstream_count = 0
         
         try:
             if sp_size > 0:
@@ -613,9 +614,13 @@ def register_routes(app):
                 except Exception:
                     segment_count = 0
                 try:
-                    workstream_count = cursor.execute(f"SELECT count(*) FROM workstreams").fetchone()[0]
+                    workstream_count = cursor.execute(f"SELECT count(*) FROM window_workstream").fetchone()[0]
                 except Exception:
                     workstream_count = 0
+                try:
+                    task_workstream_count = cursor.execute(f"SELECT count(*) FROM task_workstream").fetchone()[0]
+                except Exception:
+                    task_workstream_count = 0
                 conn.close()
         except Exception:
             pass
@@ -627,7 +632,8 @@ def register_routes(app):
                 "size_mb": round(pme_size / (1024*1024), 2),
                 "records": pme_count,
                 "segments": segment_count,
-                "workstreams": workstream_count
+                "window_workstream": workstream_count,
+                "task_workstream": task_workstream_count
             }
         })
 
