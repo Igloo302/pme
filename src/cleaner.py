@@ -2098,7 +2098,7 @@ class PMECleaner:
             "confidence_values": [],
             "relevance_values": [],
         }
-        self.add_view_to_workstream(workstream, view, relevance=1.0, reason="seed_view")
+        self.add_view_to_window_workstream(workstream, view, relevance=1.0, reason="seed_view")
         return workstream
 
     def load_existing_window_workstreams(self, cursor):
