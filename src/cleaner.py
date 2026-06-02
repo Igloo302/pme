@@ -545,6 +545,35 @@ def is_low_value_wechat_line(value):
     return False
 
 
+def extract_wechat_title_after_more(lines, chat_button_index, message_list_index):
+    more_indexes = [
+        index
+        for index, line in enumerate(lines[:chat_button_index])
+        if "[Button] 更多" in line
+    ]
+    for more_index in reversed(more_indexes):
+        for line in lines[more_index + 1:chat_button_index]:
+            value = normalize_conversation_title(clean_ax_tree_line(line))
+            if is_low_value_wechat_line(value):
+                continue
+            if not wechat_title_appears_after_chat_record(lines, chat_button_index, message_list_index, value):
+                continue
+            return value
+    return None
+
+
+def wechat_title_appears_after_chat_record(lines, chat_button_index, message_list_index, title):
+    title_key = normalize_signature_text(normalize_conversation_title(title))
+    if not title_key:
+        return False
+    end_index = message_list_index if message_list_index is not None else min(len(lines), chat_button_index + 24)
+    for line in lines[chat_button_index + 1:end_index]:
+        value = normalize_conversation_title(clean_ax_tree_line(line))
+        if title_key in normalize_signature_text(value):
+            return True
+    return False
+
+
 def extract_indented_subtree(text, marker, max_lines=120):
     lines = (text or "").splitlines()
     for index, line in enumerate(lines):
@@ -632,21 +661,7 @@ def extract_wechat_chat_context(visible_text):
     if chat_button_index is None or message_list_index is None:
         return None
 
-    conversation_title = None
-    for line in lines[chat_button_index:message_list_index]:
-        if "[TextArea]" not in line:
-            continue
-        value = clean_ax_tree_line(line)
-        if value and value != "搜索":
-            conversation_title = strip_wechat_unread_suffix(value)
-            break
-
-    if not conversation_title:
-        for line in reversed(lines[max(0, chat_button_index - 8):chat_button_index]):
-            value = strip_wechat_unread_suffix(clean_ax_tree_line(line))
-            if not is_low_value_wechat_line(value):
-                conversation_title = value
-                break
+    conversation_title = extract_wechat_title_after_more(lines, chat_button_index, message_list_index)
 
     if not conversation_title:
         return None
@@ -806,12 +821,50 @@ def should_keep_openchronicle_event(event):
     if not (event.get("visible_text") or "").strip():
         return False, "empty_visible_text"
     if (
+        is_feishu_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text"))
+        and not app_context_title(event.get("app_context"))
+    ):
+        return False, "feishu_without_title"
+    normalized_window_title = normalize_conversation_title(event.get("window_title"))
+    if (
         is_wechat_app(event.get("app_name"), event.get("bundle_id"))
-        and normalize_conversation_title(event.get("window_title")) == "微信"
+        and normalized_window_title in {"微信", "微信 (窗口)", "图片与视频"}
         and not app_context_title(event.get("app_context"))
     ):
         return False, "wechat_generic_window_without_title"
     return True, None
+
+
+def openchronicle_event_app_keys(event):
+    app_keys = set()
+    app_key = normalize_app_key(event.get("app_name"))
+    if app_key:
+        app_keys.add(app_key)
+    if is_feishu_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+        app_keys.add(normalize_app_key("Feishu"))
+    if is_wechat_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+        app_keys.add(normalize_app_key("WeChat"))
+        app_keys.add(normalize_app_key("微信"))
+    if is_edge_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+        app_keys.add(normalize_app_key("Microsoft Edge"))
+        app_keys.add(normalize_app_key("Edge"))
+    return app_keys
+
+
+def record_app_keys(app_name):
+    app_keys = set()
+    app_key = normalize_app_key(app_name)
+    if app_key:
+        app_keys.add(app_key)
+    if is_feishu_app(app_name):
+        app_keys.add(normalize_app_key("Feishu"))
+    if is_wechat_app(app_name):
+        app_keys.add(normalize_app_key("WeChat"))
+        app_keys.add(normalize_app_key("微信"))
+    if is_edge_app(app_name):
+        app_keys.add(normalize_app_key("Microsoft Edge"))
+        app_keys.add(normalize_app_key("Edge"))
+    return app_keys
 
 
 def openchronicle_event_matches_record(event, record):
@@ -1672,9 +1725,11 @@ class PMECleaner:
         print(f"Fetched {len(rows)} raw OCR entries.")
         return rows
 
-    def load_openchronicle_events(self, start_time, end_time=None):
+    def load_openchronicle_events(self, start_time, end_time=None, include_discarded=False):
         if not self.openchronicle_db or not os.path.exists(self.openchronicle_db):
             print(f"OpenChronicle database not found at {self.openchronicle_db}. Skipping AXTree dynamics.")
+            if include_discarded:
+                return [], []
             return []
             
         print(f"Connecting to OpenChronicle database: {self.openchronicle_db}...")
@@ -1693,6 +1748,7 @@ class PMECleaner:
         conn.close()
         
         oc_events = []
+        discarded_oc_events = []
         skipped_stats = Counter()
         for row in rows:
             try:
@@ -1703,6 +1759,8 @@ class PMECleaner:
                     continue
                 should_keep, skip_reason = should_keep_openchronicle_event(event)
                 if not should_keep:
+                    event["discard_reason"] = skip_reason
+                    discarded_oc_events.append(event)
                     skipped_stats[skip_reason] += 1
                     continue
                 oc_events.append(event)
@@ -1715,23 +1773,39 @@ class PMECleaner:
                 "Skipped OpenChronicle events: "
                 + ", ".join(f"{reason}={count}" for reason, count in sorted(skipped_stats.items()))
             )
+        if include_discarded:
+            return oc_events, discarded_oc_events
         return oc_events
 
     def build_openchronicle_event_second_index(self, oc_events):
         event_seconds = set()
         for event in oc_events or []:
-            app_key = normalize_app_key(event.get("app_name"))
-            if app_key:
+            for app_key in openchronicle_event_app_keys(event):
                 event_seconds.add((event.get("timestamp_epoch"), app_key))
-            if is_feishu_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
-                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Feishu")))
-            if is_wechat_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
-                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("WeChat")))
-                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("微信")))
-            if is_edge_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
-                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Microsoft Edge")))
-                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Edge")))
         return event_seconds
+
+    def build_openchronicle_event_app_time_index(self, oc_events):
+        event_index = {}
+        for event in oc_events or []:
+            event_epoch = event.get("timestamp_epoch")
+            if event_epoch is None:
+                continue
+            for app_key in openchronicle_event_app_keys(event):
+                event_index.setdefault(app_key, set()).add(event_epoch)
+        return event_index
+
+    def has_matching_openchronicle_event_nearby(self, event_index, app_name, timestamp_dt, window_seconds):
+        if not event_index:
+            return False
+        timestamp_epoch = datetime_to_epoch_second(timestamp_dt)
+        for app_key in record_app_keys(app_name):
+            event_seconds = event_index.get(app_key)
+            if not event_seconds:
+                continue
+            for candidate_epoch in range(timestamp_epoch - window_seconds, timestamp_epoch + window_seconds + 1):
+                if candidate_epoch in event_seconds:
+                    return True
+        return False
 
     def select_openchronicle_events_for_records(self, inserted_records, oc_events):
         if not inserted_records or not oc_events:
@@ -1914,9 +1988,13 @@ class PMECleaner:
         output_conn.commit()
         return updated_count
 
-    def select_records_to_keep(self, sp_rows, oc_events, min_quality=None):
+    def select_records_to_keep(self, sp_rows, oc_events, discarded_oc_events=None, min_quality=None):
         min_quality = self.min_quality if min_quality is None else min_quality
         oc_event_seconds = self.build_openchronicle_event_second_index(oc_events)
+        discarded_event_index = self.build_openchronicle_event_app_time_index(discarded_oc_events)
+        discarded_link_window_seconds = int(
+            self.config.get("openchronicle", {}).get("record_link_window_seconds", 6)
+        )
 
         timeline = {}
         for row in sp_rows:
@@ -1952,6 +2030,7 @@ class PMECleaner:
                 "unfocused_system_app": 0,
                 "low_information": 0,
                 "low_quality": 0,
+                "discarded_openchronicle_event": 0,
             }
 
         last_ocr_time = {}
@@ -1971,6 +2050,7 @@ class PMECleaner:
             "unfocused_system_app": 0,
             "low_information": 0,
             "low_quality": 0,
+            "discarded_openchronicle_event": 0,
         }
 
         for t in sorted_seconds:
@@ -2014,6 +2094,15 @@ class PMECleaner:
                     continue
 
                 last_ocr_time[app][window] = t
+                if self.has_matching_openchronicle_event_nearby(
+                    discarded_event_index,
+                    app,
+                    t,
+                    discarded_link_window_seconds,
+                ):
+                    stats["discarded_openchronicle_event"] += 1
+                    continue
+
                 cleaned_text = normalize_ocr_text(text)
                 noise_reason = self.classify_noise_reason(app, focused, cleaned_text)
                 if noise_reason:
@@ -2115,7 +2204,8 @@ class PMECleaner:
         max_segment_minutes=None,
         focus_switch_split_minutes=None,
         segment_config=None,
-        view_config=None
+        view_config=None,
+        discarded_oc_events=None,
     ):
         print("Running scheduling simulation & deduplication...")
         segment_gap_minutes = self.segment_gap_minutes if segment_gap_minutes is None else segment_gap_minutes
@@ -2126,7 +2216,12 @@ class PMECleaner:
             else focus_switch_split_minutes
         )
 
-        kept_records, stats = self.select_records_to_keep(sp_rows, oc_events, min_quality=min_quality)
+        kept_records, stats = self.select_records_to_keep(
+            sp_rows,
+            oc_events,
+            discarded_oc_events=discarded_oc_events,
+            min_quality=min_quality,
+        )
         stats.update({
             "segments": 0,
             "views": 0,
@@ -4562,10 +4657,15 @@ class PMECleaner:
             return None
             
         try:
-            oc_events = self.load_openchronicle_events(start_time, end_time)
+            oc_events, discarded_oc_events = self.load_openchronicle_events(
+                start_time,
+                end_time,
+                include_discarded=True,
+            )
         except Exception as e:
             print(f"Error reading OpenChronicle: {e}")
             oc_events = []
+            discarded_oc_events = []
 
         # inspect matching
         coverage_stats = self.inspect_openchronicle_coverage(sp_rows, oc_events, start_time)
@@ -4580,7 +4680,8 @@ class PMECleaner:
             max_segment_minutes=max_segment_minutes,
             focus_switch_split_minutes=focus_switch_split_minutes,
             segment_config=self.segment_cfg,
-            view_config=self.view_cfg
+            view_config=self.view_cfg,
+            discarded_oc_events=discarded_oc_events,
         )
         output_conn.close()
         
@@ -4604,6 +4705,7 @@ class PMECleaner:
         print(f"OpenChronicle Events: {stats.get('openchronicle_events', 0)}")
         print(f"Record AX Event Links: {stats.get('record_ax_event_links', 0)}")
         print(f"Record AX Context Updates: {stats.get('record_ax_context_updates', 0)}")
+        print(f"Discarded by OpenChronicle Events: {stats.get('discarded_openchronicle_event', 0)}")
         print(f"Deduplicated (Skipped): {stats.get('deduplicated', 0)}")
         print(f"Ignored Apps (Skipped): {stats.get('ignored_app', 0)}")
         print(f"Unfocused System Apps (Skipped): {stats.get('unfocused_system_app', 0)}")
