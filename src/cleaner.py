@@ -195,7 +195,7 @@ def normalize_ocr_text(text):
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
-        if len(line) == 1 and not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", line):
+        if len(line) == 1 and not re.search(r"[\u4e00-\u9fff]", line):
             continue
         if any(re.search(pattern, line, re.IGNORECASE) for pattern in NOISE_LINE_PATTERNS):
             continue
@@ -902,14 +902,6 @@ def select_app_context_event_for_records(records):
 def select_app_context_for_records(records):
     _event, context = select_app_context_event_for_records(records)
     return context
-
-
-def select_feishu_context_for_records(records):
-    context = select_app_context_for_records(records)
-    if context and context.get("surface") == "messenger-chat":
-        return context
-    return None
-
 
 def _last_non_system_record(records):
     for record in reversed(records):
@@ -1958,6 +1950,16 @@ class PMECleaner:
                     elif app_context.get("surface") == "wechat-chat":
                         record["wechat_context"] = app_context
                 elif app_context.get("surface") == "browser-tab":
+                    context_json = {
+                        **app_context,
+                        "source_capture_id": (app_context_event or {}).get("source_capture_id"),
+                        "openchronicle_event_id": (app_context_event or {}).get("id"),
+                        "delta_seconds": (app_context_event or {}).get("delta_seconds"),
+                        "match_reason": (app_context_event or {}).get("match_reason"),
+                    }
+                    record["ax_window_title"] = context_title
+                    record["ax_context_json"] = json.dumps(context_json, ensure_ascii=False)
+                    record["text_source"] = "ocr"
                     record["edge_context"] = app_context
         return inserted_records
 
