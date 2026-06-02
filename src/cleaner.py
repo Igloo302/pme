@@ -4,11 +4,14 @@ import hashlib
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from difflib import SequenceMatcher
 from src.config_loader import get_config
+
+DATABASE_TIMEZONE = timezone(timedelta(hours=8))
 
 NOISE_LINE_PATTERNS = [
     r"^\d{1,2}:\d{2}$",
@@ -336,6 +339,525 @@ def compact_ocr_excerpt(text, limit):
     return compacted[:limit]
 
 
+def datetime_to_epoch_second(dt):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def parse_timestamp_to_utc(ts_str):
+    dt = datetime.fromisoformat((ts_str or "").replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def parse_user_time_to_utc(ts_str):
+    dt = datetime.fromisoformat((ts_str or "").replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=DATABASE_TIMEZONE)
+    return dt.astimezone(timezone.utc)
+
+
+def to_db_timezone(dt):
+    if isinstance(dt, str):
+        dt = parse_user_time_to_utc(dt)
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(DATABASE_TIMEZONE)
+
+
+def format_db_timestamp(dt):
+    return to_db_timezone(dt).isoformat()
+
+
+def now_db_timestamp():
+    return datetime.now(DATABASE_TIMEZONE).isoformat()
+
+
+def normalize_app_key(value):
+    return normalize_signature_text(value)
+
+
+def is_feishu_app(app_name, bundle_id=None, visible_text=None):
+    app_key = normalize_app_key(app_name)
+    bundle_key = normalize_app_key(bundle_id)
+    visible_text = visible_text or ""
+    return (
+        "feishu" in app_key
+        or "飞书" in (app_name or "")
+        or "electron lark" in bundle_key
+        or "com.electron.lark" in (bundle_id or "")
+        or "_com.electron.lark_" in visible_text
+        or "## 飞书" in visible_text
+    )
+
+
+def is_wechat_app(app_name, bundle_id=None, visible_text=None):
+    app_key = normalize_app_key(app_name)
+    bundle_key = normalize_app_key(bundle_id)
+    visible_text = visible_text or ""
+    return (
+        "wechat" in app_key
+        or "微信" in (app_name or "")
+        or "xinwechat" in bundle_key
+        or "com.tencent.xinWeChat" in (bundle_id or "")
+        or "_com.tencent.xinWeChat_" in visible_text
+        or "## 微信" in visible_text
+    )
+
+
+def is_edge_app(app_name, bundle_id=None, visible_text=None):
+    app_key = normalize_app_key(app_name)
+    bundle_key = normalize_app_key(bundle_id)
+    visible_text = visible_text or ""
+    return (
+        "microsoft edge" in app_key
+        or app_key == "edge"
+        or "edgemac" in bundle_key
+        or "com.microsoft.edgemac" in (bundle_id or "")
+        or "_com.microsoft.edgemac_" in visible_text
+        or "## Microsoft Edge" in visible_text
+    )
+
+
+def clean_ax_tree_line(line):
+    text = (line or "").strip()
+    if text.startswith("- "):
+        text = text[2:].strip()
+    text = re.sub(r"^\[[^\]]+\]\s*", "", text).strip()
+    return text
+
+
+def ax_line_indent(line):
+    return len(line or "") - len((line or "").lstrip())
+
+
+def strip_wechat_unread_suffix(value):
+    value = (value or "").strip()
+    return re.sub(r"\(\d+\)$", "", value).strip()
+
+
+def normalize_conversation_title(value):
+    value = re.sub(r"\s+", " ", str(value or "")).strip()
+    return strip_wechat_unread_suffix(value)
+
+
+def normalize_browser_title(value):
+    value = str(value or "")
+    value = re.sub(r"[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]", "", value)
+    value = clean_ax_tree_line(value)
+    value = re.sub(r"\s+", " ", value).strip()
+    value = re.sub(r"\s*[-|｜]?\s*内存使用(?:量高|率)?\s*(?:[-:：]\s*)?\d+(?:\.\d+)?\s*(?:KB|MB|GB|TB)?\b", "", value, flags=re.IGNORECASE).strip()
+    value = re.sub(r"\s*[-|｜]?\s*内存使用量高\b", "", value).strip()
+    value = re.sub(r"\s+-\s+Microsoft Edge$", "", value).strip()
+    value = re.sub(r"\s+\|\s+Microsoft Edge$", "", value).strip()
+    value = re.sub(r"\s*(?:[-|｜]\s*)+$", "", value).strip()
+    return value
+
+
+def is_low_value_browser_title(value):
+    value = normalize_browser_title(value)
+    if not value:
+        return True
+    key = normalize_signature_text(value)
+    return key in {
+        "通用",
+        "无标题",
+        "microsoft edge",
+        "edge",
+        "record",
+        "docs",
+        "new tab",
+        "新建标签页",
+        "about blank",
+    }
+
+
+def normalize_browser_url(value):
+    value = str(value or "").strip()
+    if not value.startswith(("http://", "https://")):
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    path = re.sub(r"/{2,}", "/", parsed.path or "/")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def browser_title_from_url(url):
+    normalized_url = normalize_browser_url(url)
+    if not normalized_url:
+        return ""
+    parsed = urllib.parse.urlsplit(normalized_url)
+    path = (parsed.path or "").strip("/")
+    if path:
+        path_parts = [part for part in path.split("/") if part][:2]
+        return f"{parsed.netloc}/{'/'.join(path_parts)}"
+    return parsed.netloc
+
+
+def app_context_title(context):
+    if not context:
+        return ""
+    if context.get("conversation_title"):
+        return normalize_conversation_title(context.get("conversation_title"))
+    if context.get("page_title"):
+        return normalize_browser_title(context.get("page_title"))
+    return ""
+
+
+def is_chat_app_context(context):
+    return bool(context and context.get("surface") in {"messenger-chat", "wechat-chat"})
+
+
+def app_context_chat_text(context, limit_chars=4000):
+    if not is_chat_app_context(context):
+        return ""
+    message_lines = []
+    if context.get("chat_text"):
+        message_lines.extend(
+            line.strip()
+            for line in str(context.get("chat_text")).splitlines()
+            if line.strip()
+        )
+    append_unique(message_lines, context.get("message_lines") or [], limit=80)
+    text = "\n".join(message_lines).strip()
+    return text[:limit_chars]
+
+
+def get_record_text_for_view(record):
+    return (record.get("ax_chat_text") or record.get("cleaned_text") or record.get("text") or "").strip()
+
+
+def is_low_value_wechat_line(value):
+    if not value:
+        return True
+    if value in {":", "：", "消息", "聊天记录", "从手机导入聊天记录", "语音通话", "聊天信息"}:
+        return True
+    if value in {"发送表情(⌥⌘E)", "发送收藏", "发送文件", "截图(⌃⌘A)", "隐藏窗口截图", "语音输入文字(按住Fn)", "展开"}:
+        return True
+    if value in {"快捷操作", "搜索", "会话", "微信", "通讯录", "收藏", "朋友圈", "视频号", "搜一搜", "小程序面板", "手机", "更多"}:
+        return True
+    if re.fullmatch(r"\(?\d+\)?", value):
+        return True
+    return False
+
+
+def extract_indented_subtree(text, marker, max_lines=120):
+    lines = (text or "").splitlines()
+    for index, line in enumerate(lines):
+        if marker not in line:
+            continue
+        marker_indent = len(line) - len(line.lstrip())
+        subtree = []
+        for child in lines[index + 1:]:
+            if not child.strip():
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= marker_indent:
+                break
+            subtree.append(child)
+            if len(subtree) >= max_lines:
+                break
+        return subtree
+    return []
+
+
+def extract_feishu_messenger_chat_context(visible_text):
+    subtree = extract_indented_subtree(visible_text, "messenger-chat", max_lines=160)
+    if not subtree:
+        return None
+
+    tabs = []
+    message_lines = []
+    conversation_title = None
+    skip_values = {"消息", "云文档", "文件", "收起", "展开"}
+    for raw_line in subtree:
+        value = clean_ax_tree_line(raw_line)
+        if not value:
+            continue
+        if value in {"消息", "云文档", "文件"}:
+            append_unique(tabs, [value], limit=8)
+            continue
+        if value in skip_values:
+            continue
+        if re.fullmatch(r"\d+", value):
+            continue
+        if value in {":", "："}:
+            continue
+        if conversation_title is None:
+            conversation_title = value
+            continue
+        append_unique(message_lines, [value], limit=30)
+
+    if not conversation_title:
+        return None
+
+    visible_people = []
+    for value in message_lines:
+        if len(value) <= 24 and not re.search(r"https?://|[。！？!?]{1}|RuntimeError|Cron|Response", value):
+            append_unique(visible_people, [value], limit=12)
+
+    summary_parts = [f"飞书聊天「{conversation_title}」"]
+    if message_lines:
+        summary_parts.append("可见内容：" + " / ".join(message_lines[:8])[:600])
+
+    return {
+        "surface": "messenger-chat",
+        "conversation_title": conversation_title,
+        "tabs": tabs,
+        "visible_people": visible_people,
+        "message_lines": message_lines,
+        "chat_text": "\n".join(message_lines),
+        "structure_summary": "，".join(summary_parts) + "。",
+    }
+
+
+def extract_wechat_chat_context(visible_text):
+    lines = (visible_text or "").splitlines()
+    if not lines:
+        return None
+
+    chat_button_index = None
+    message_list_index = None
+    for index, line in enumerate(lines):
+        if "[Button] 聊天记录" in line:
+            chat_button_index = index
+        if "[List] 消息" in line:
+            message_list_index = index
+            break
+
+    if chat_button_index is None or message_list_index is None:
+        return None
+
+    conversation_title = None
+    for line in lines[chat_button_index:message_list_index]:
+        if "[TextArea]" not in line:
+            continue
+        value = clean_ax_tree_line(line)
+        if value and value != "搜索":
+            conversation_title = strip_wechat_unread_suffix(value)
+            break
+
+    if not conversation_title:
+        for line in reversed(lines[max(0, chat_button_index - 8):chat_button_index]):
+            value = strip_wechat_unread_suffix(clean_ax_tree_line(line))
+            if not is_low_value_wechat_line(value):
+                conversation_title = value
+                break
+
+    if not conversation_title:
+        return None
+
+    message_list_indent = ax_line_indent(lines[message_list_index])
+    message_lines = []
+    for line in lines[message_list_index + 1:]:
+        if not line.strip():
+            continue
+        if "[List] 内容" in line or "[List] 会话" in line:
+            break
+        indent = ax_line_indent(line)
+        if indent <= message_list_indent:
+            break
+        value = clean_ax_tree_line(line)
+        if is_low_value_wechat_line(value):
+            continue
+        if re.fullmatch(r"\d{1,2}:\d{2}", value) or re.fullmatch(r"\d{1,2}/\d{1,2}", value):
+            continue
+        append_unique(message_lines, [value], limit=30)
+
+    summary_parts = [f"微信聊天「{conversation_title}」"]
+    if message_lines:
+        summary_parts.append("可见消息：" + " / ".join(message_lines[:8])[:600])
+
+    return {
+        "source_app": "WeChat",
+        "surface": "wechat-chat",
+        "route": "wechat_chat",
+        "conversation_title": conversation_title,
+        "visible_people": [],
+        "message_lines": message_lines,
+        "chat_text": "\n".join(message_lines),
+        "structure_summary": "，".join(summary_parts) + "。",
+    }
+
+
+def extract_edge_browser_context(visible_text, window_title=None, focused_value=None, url=None):
+    visible_text = visible_text or ""
+    url_candidates = []
+    for value in [url, focused_value]:
+        normalized_url = normalize_browser_url(value)
+        if normalized_url:
+            append_unique(url_candidates, [normalized_url], limit=4)
+    for line in visible_text.splitlines():
+        match = re.search(r"\[TextField\]\s*(https?://\S+)", line)
+        if match:
+            append_unique(url_candidates, [normalize_browser_url(match.group(1))], limit=4)
+
+    title_candidates = []
+    for value in [window_title, focused_value]:
+        title = normalize_browser_title(value)
+        if title and not title.startswith(("http://", "https://")):
+            append_unique(title_candidates, [title], limit=8)
+
+    for line in visible_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            append_unique(title_candidates, [normalize_browser_title(stripped[4:])], limit=8)
+            continue
+        if "[WebArea]" in stripped:
+            append_unique(title_candidates, [normalize_browser_title(stripped)], limit=8)
+
+    page_title = ""
+    for title in title_candidates:
+        if not is_low_value_browser_title(title):
+            page_title = title
+            break
+    if not page_title and url_candidates:
+        page_title = browser_title_from_url(url_candidates[0])
+
+    if not page_title:
+        return None
+
+    summary_parts = [f"浏览器标签页「{page_title}」"]
+    if url_candidates:
+        summary_parts.append(f"URL：{url_candidates[0]}")
+
+    return {
+        "source_app": "Microsoft Edge",
+        "surface": "browser-tab",
+        "route": "edge_browser_tab",
+        "page_title": page_title,
+        "url": url_candidates[0] if url_candidates else "",
+        "title_candidates": title_candidates[:8],
+        "structure_summary": "，".join(summary_parts) + "。",
+    }
+
+
+def normalize_openchronicle_capture(row):
+    source_id = row.get("id") or ""
+    timestamp_dt = parse_timestamp_to_utc(row.get("timestamp"))
+    visible_text = row.get("visible_text") or ""
+    feishu_context = None
+    if is_feishu_app(row.get("app_name"), row.get("bundle_id"), visible_text):
+        feishu_context = extract_feishu_messenger_chat_context(visible_text)
+    wechat_context = None
+    if is_wechat_app(row.get("app_name"), row.get("bundle_id"), visible_text):
+        wechat_context = extract_wechat_chat_context(visible_text)
+    edge_context = None
+    if is_edge_app(row.get("app_name"), row.get("bundle_id"), visible_text):
+        edge_context = extract_edge_browser_context(
+            visible_text,
+            window_title=row.get("window_title"),
+            focused_value=row.get("focused_value"),
+            url=row.get("url"),
+        )
+    app_context = feishu_context or wechat_context or edge_context
+
+    normalized = {
+        "event_type": "axtree_capture",
+        "app_name": row.get("app_name") or "",
+        "bundle_id": row.get("bundle_id") or "",
+        "window_title": row.get("window_title") or "",
+        "focused_role": row.get("focused_role") or "",
+        "focused_value": row.get("focused_value") or "",
+        "url": row.get("url") or "",
+        "has_messenger_chat": bool(feishu_context),
+        "has_wechat_chat": bool(wechat_context),
+        "has_browser_tab": bool(edge_context),
+        "app_context_route": (app_context or {}).get("route") or (app_context or {}).get("surface") or "",
+    }
+    return {
+        "source_capture_id": source_id,
+        "timestamp": format_db_timestamp(timestamp_dt),
+        "timestamp_dt": timestamp_dt,
+        "timestamp_epoch": datetime_to_epoch_second(timestamp_dt),
+        "app_name": row.get("app_name") or "",
+        "bundle_id": row.get("bundle_id") or "",
+        "window_title": row.get("window_title") or "",
+        "focused_role": row.get("focused_role") or "",
+        "focused_value": row.get("focused_value") or "",
+        "visible_text": visible_text,
+        "url": row.get("url") or "",
+        "event_type": "axtree_capture",
+        "normalized": normalized,
+        "app_context": app_context,
+        "feishu_context": feishu_context,
+        "wechat_context": wechat_context,
+        "edge_context": edge_context,
+        "raw": {
+            "id": source_id,
+            "timestamp": format_db_timestamp(timestamp_dt),
+            "source_timestamp": row.get("timestamp"),
+            "app_name": row.get("app_name"),
+            "bundle_id": row.get("bundle_id"),
+            "window_title": row.get("window_title"),
+            "focused_role": row.get("focused_role"),
+            "focused_value": row.get("focused_value"),
+            "visible_text": visible_text,
+            "url": row.get("url"),
+        },
+    }
+
+
+def should_keep_openchronicle_event(event):
+    if not (event.get("visible_text") or "").strip():
+        return False, "empty_visible_text"
+    if (
+        is_wechat_app(event.get("app_name"), event.get("bundle_id"))
+        and normalize_conversation_title(event.get("window_title")) == "微信"
+        and not app_context_title(event.get("app_context"))
+    ):
+        return False, "wechat_generic_window_without_title"
+    return True, None
+
+
+def openchronicle_event_matches_record(event, record):
+    record_app = record.get("app") or ""
+    event_app = event.get("app_name") or ""
+    if normalize_app_key(record_app) and normalize_app_key(record_app) == normalize_app_key(event_app):
+        return True
+    if is_feishu_app(record_app) and is_feishu_app(event_app, event.get("bundle_id"), event.get("visible_text")):
+        return True
+    if is_wechat_app(record_app) and is_wechat_app(event_app, event.get("bundle_id"), event.get("visible_text")):
+        return True
+    if is_edge_app(record_app) and is_edge_app(event_app, event.get("bundle_id"), event.get("visible_text")):
+        return True
+    return False
+
+
+def select_app_context_event_for_records(records):
+    candidates = []
+    for record in records:
+        for event in record.get("ax_events") or []:
+            context = (
+                event.get("app_context")
+                or event.get("feishu_context")
+                or event.get("wechat_context")
+                or event.get("edge_context")
+            )
+            if context and app_context_title(context):
+                candidates.append((record.get("timestamp_dt"), event, context))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda item: item[0] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return candidates[0][1], candidates[0][2]
+
+
+def select_app_context_for_records(records):
+    _event, context = select_app_context_event_for_records(records)
+    return context
+
+
+def select_feishu_context_for_records(records):
+    context = select_app_context_for_records(records)
+    if context and context.get("surface") == "messenger-chat":
+        return context
+    return None
+
+
 def _last_non_system_record(records):
     for record in reversed(records):
         if _activity_group(record) != "system":
@@ -477,7 +999,7 @@ def summarize_segment(records, view_infos=None):
     end = records[-1]["timestamp_dt"]
     duration_min = max(1, round((end - start).total_seconds() / 60))
     summary = (
-        f"{start.isoformat()} 至 {end.isoformat()}，主要在 {', '.join(apps) or '未知应用'} "
+        f"{format_db_timestamp(start)} 至 {format_db_timestamp(end)}，主要在 {', '.join(apps) or '未知应用'} "
         f"进行{activity_type}类工作，持续约 {duration_min} 分钟。"
     )
     if windows:
@@ -494,8 +1016,8 @@ def summarize_segment(records, view_infos=None):
         confidence += 0.05
 
     return {
-        "start_timestamp": start.isoformat(),
-        "end_timestamp": end.isoformat(),
+        "start_timestamp": format_db_timestamp(start),
+        "end_timestamp": format_db_timestamp(end),
         "duration_seconds": int((end - start).total_seconds()),
         "activity_type": activity_type,
         "project_hint": "unknown",
@@ -513,27 +1035,43 @@ def summarize_segment(records, view_infos=None):
 def summarize_view(records):
     sorted_records = sorted(records, key=lambda item: item["timestamp_dt"])
     app = sorted_records[0].get("app")
-    window = sorted_records[0].get("window")
+    app_context = select_app_context_for_records(sorted_records)
+    context_title = app_context_title(app_context)
+    window = (
+        sorted_records[0].get("view_window")
+        or context_title
+        or sorted_records[0].get("window")
+    )
     kind_counts = Counter(record["content_kind"] for record in sorted_records if record["content_kind"])
     content_kind = kind_counts.most_common(1)[0][0] if kind_counts else "other"
+    if is_chat_app_context(app_context):
+        content_kind = "chat"
+    elif app_context and app_context.get("surface") == "browser-tab":
+        content_kind = "browsing"
 
     artifacts = []
     for record in sorted_records:
-        for artifact in extract_artifacts(record["window"], record["cleaned_text"]):
+        view_text = get_record_text_for_view(record)
+        for artifact in extract_artifacts(record["window"], view_text):
             if artifact not in artifacts:
                 artifacts.append(artifact)
+    if app_context and app_context.get("surface") == "browser-tab":
+        append_unique(artifacts, [app_context.get("url")], limit=20)
     entities = []
     for record in sorted_records:
-        append_unique(entities, extract_entities(record["window"], record["cleaned_text"]), limit=30)
+        append_unique(entities, extract_entities(record["window"], get_record_text_for_view(record)), limit=30)
+    if app_context:
+        append_unique(entities, [context_title], limit=30)
+        append_unique(entities, app_context.get("visible_people") or [], limit=30)
 
     representative = sorted(
         sorted_records,
-        key=lambda item: (item["focused"], item["ocr_quality_score"], len(item["cleaned_text"])),
+        key=lambda item: (item["focused"], item["ocr_quality_score"], len(get_record_text_for_view(item))),
         reverse=True,
     )[:5]
     snippets = []
     for record in representative:
-        snippet = compact_ocr_excerpt(record.get("text") or record["cleaned_text"], 700)
+        snippet = compact_ocr_excerpt(get_record_text_for_view(record), 700)
         if snippet and snippet not in snippets:
             snippets.append(snippet)
 
@@ -548,6 +1086,12 @@ def summarize_view(records):
     }.get(content_kind, "查看屏幕内容")
 
     visible_content_summary = [f"在 {app or '未知应用'} - {window or '未知窗口'} 中，用户主要在{action_prefix}。"]
+    if app_context:
+        visible_content_summary.append(app_context.get("structure_summary") or "")
+    if is_chat_app_context(app_context):
+        chat_text = app_context_chat_text(app_context, limit_chars=900)
+        if chat_text:
+            visible_content_summary.append("对话内容：" + chat_text.replace("\n", " / "))
     if artifacts:
         visible_content_summary.append(f"涉及文件或链接：{', '.join(artifacts[:6])}。")
     if snippets:
@@ -557,23 +1101,31 @@ def summarize_view(records):
         app,
         window,
         content_kind,
-        "\n".join(record["cleaned_text"] for record in sorted_records),
+        "\n".join(get_record_text_for_view(record) for record in sorted_records),
         artifacts,
         entities,
     )
+    if app_context and app_context.get("surface") == "messenger-chat":
+        append_unique(topics, ["飞书聊天", "会话消息查看"], limit=20)
+    elif app_context and app_context.get("surface") == "wechat-chat":
+        append_unique(topics, ["微信聊天", "会话消息查看"], limit=20)
+    elif app_context and app_context.get("surface") == "browser-tab":
+        append_unique(topics, ["浏览器标签页"], limit=20)
 
     confidence = sum(record["ocr_quality_score"] for record in sorted_records) / max(1, len(sorted_records))
     if any(record["focused"] for record in sorted_records):
         confidence += 0.05
     if len(sorted_records) >= 3:
         confidence += 0.05
+    if app_context:
+        confidence += 0.08
 
     return {
         "app_name": app,
         "window_title": window,
         "content_kind": content_kind,
-        "start_timestamp": sorted_records[0]["timestamp_dt"].isoformat(),
-        "end_timestamp": sorted_records[-1]["timestamp_dt"].isoformat(),
+        "start_timestamp": format_db_timestamp(sorted_records[0]["timestamp_dt"]),
+        "end_timestamp": format_db_timestamp(sorted_records[-1]["timestamp_dt"]),
         "visible_content_summary": " ".join(visible_content_summary),
         "representative_text": "\n\n---\n\n".join(snippets),
         "topics_json": dump_json_list(topics[:20]),
@@ -660,7 +1212,7 @@ def parse_iso_datetime(value):
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parse_user_time_to_utc(str(value))
     except ValueError:
         return None
 
@@ -744,6 +1296,10 @@ class PMECleaner:
             focused INTEGER,
             ocr_text TEXT,
             cleaned_text TEXT,
+            ax_window_title TEXT,
+            ax_chat_text TEXT,
+            ax_context_json TEXT,
+            text_source TEXT,
             ocr_quality_score REAL,
             content_kind TEXT,
             trigger_reason TEXT,
@@ -756,6 +1312,10 @@ class PMECleaner:
         }
         for column_name, column_type in [
             ("cleaned_text", "TEXT"),
+            ("ax_window_title", "TEXT"),
+            ("ax_chat_text", "TEXT"),
+            ("ax_context_json", "TEXT"),
+            ("text_source", "TEXT"),
             ("ocr_quality_score", "REAL"),
             ("content_kind", "TEXT"),
         ]:
@@ -827,6 +1387,48 @@ class PMECleaner:
             PRIMARY KEY (view_id, segment_id),
             FOREIGN KEY (view_id) REFERENCES views(id) ON DELETE CASCADE,
             FOREIGN KEY (segment_id) REFERENCES segments(id) ON DELETE CASCADE
+        );
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS openchronicle_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_capture_id TEXT UNIQUE,
+            timestamp TEXT NOT NULL,
+            timestamp_epoch INTEGER,
+            app_name TEXT,
+            bundle_id TEXT,
+            window_title TEXT,
+            event_type TEXT,
+            focused_role TEXT,
+            focused_value TEXT,
+            visible_text TEXT,
+            url TEXT,
+            normalized_json TEXT,
+            app_context_json TEXT,
+            feishu_context_json TEXT,
+            raw_json TEXT
+        );
+        """)
+
+        existing_oc_columns = {
+            row[1] for row in cursor.execute("PRAGMA table_info(openchronicle_events)").fetchall()
+        }
+        for column_name, column_type in [
+            ("app_context_json", "TEXT"),
+        ]:
+            if column_name not in existing_oc_columns:
+                cursor.execute(f"ALTER TABLE openchronicle_events ADD COLUMN {column_name} {column_type}")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS record_ax_events (
+            record_id INTEGER NOT NULL,
+            openchronicle_event_id INTEGER NOT NULL,
+            delta_seconds REAL,
+            match_reason TEXT,
+            PRIMARY KEY (record_id, openchronicle_event_id),
+            FOREIGN KEY (record_id) REFERENCES records(id) ON DELETE CASCADE,
+            FOREIGN KEY (openchronicle_event_id) REFERENCES openchronicle_events(id) ON DELETE CASCADE
         );
         """)
 
@@ -951,6 +1553,10 @@ class PMECleaner:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_view_app ON views(app_name, window_title);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_view_kind ON views(content_kind);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_view_segments_segment ON view_segments(segment_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_openchronicle_events_time ON openchronicle_events(timestamp_epoch);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_openchronicle_events_app ON openchronicle_events(app_name, bundle_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_record_ax_events_record ON record_ax_events(record_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_record_ax_events_event ON record_ax_events(openchronicle_event_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_window_workstream_time ON window_workstream(start_timestamp, end_timestamp);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_window_workstream_members_workstream ON window_workstream_members(window_workstream_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_window_workstream_members_view ON window_workstream_members(view_id);")
@@ -1067,44 +1673,256 @@ class PMECleaner:
         return rows
 
     def load_openchronicle_events(self, start_time, end_time=None):
-        if not os.path.exists(self.openchronicle_db):
+        if not self.openchronicle_db or not os.path.exists(self.openchronicle_db):
             print(f"OpenChronicle database not found at {self.openchronicle_db}. Skipping AXTree dynamics.")
-            return set()
+            return []
             
         print(f"Connecting to OpenChronicle database: {self.openchronicle_db}...")
         conn = sqlite3.connect(self.openchronicle_db)
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        query = "SELECT timestamp, app_name FROM captures ORDER BY timestamp ASC"
+        query = """
+        SELECT id, timestamp, app_name, bundle_id, window_title,
+               focused_role, focused_value, visible_text, url
+        FROM captures
+        ORDER BY timestamp ASC
+        """
         cursor.execute(query)
-        rows = cursor.fetchall()
+        rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         
-        oc_events = set()
+        oc_events = []
+        skipped_stats = Counter()
         for row in rows:
-            ts_str, app_name = row
             try:
-                dt = datetime.fromisoformat(ts_str)
-                dt_utc = dt.astimezone(timezone.utc)
-                if dt_utc.timestamp() >= start_time.timestamp():
-                    if end_time is None or dt_utc.timestamp() <= end_time.timestamp():
-                        dt_utc_sec = dt_utc.replace(microsecond=0)
-                        if app_name:
-                            oc_events.add((dt_utc_sec, app_name.strip().lower()))
+                event = normalize_openchronicle_capture(row)
+                if event["timestamp_epoch"] < datetime_to_epoch_second(start_time):
+                    continue
+                if end_time is not None and event["timestamp_epoch"] > datetime_to_epoch_second(end_time):
+                    continue
+                should_keep, skip_reason = should_keep_openchronicle_event(event)
+                if not should_keep:
+                    skipped_stats[skip_reason] += 1
+                    continue
+                oc_events.append(event)
             except Exception:
                 continue
                 
         print(f"Loaded {len(oc_events)} OpenChronicle events.")
+        if skipped_stats:
+            print(
+                "Skipped OpenChronicle events: "
+                + ", ".join(f"{reason}={count}" for reason, count in sorted(skipped_stats.items()))
+            )
         return oc_events
+
+    def build_openchronicle_event_second_index(self, oc_events):
+        event_seconds = set()
+        for event in oc_events or []:
+            app_key = normalize_app_key(event.get("app_name"))
+            if app_key:
+                event_seconds.add((event.get("timestamp_epoch"), app_key))
+            if is_feishu_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Feishu")))
+            if is_wechat_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("WeChat")))
+                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("微信")))
+            if is_edge_app(event.get("app_name"), event.get("bundle_id"), event.get("visible_text")):
+                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Microsoft Edge")))
+                event_seconds.add((event.get("timestamp_epoch"), normalize_app_key("Edge")))
+        return event_seconds
+
+    def select_openchronicle_events_for_records(self, inserted_records, oc_events):
+        if not inserted_records or not oc_events:
+            return {}, []
+        link_window_seconds = self.config.get("openchronicle", {}).get("record_link_window_seconds", 6)
+        max_events_per_record = self.config.get("openchronicle", {}).get("max_events_per_record", 3)
+        events_by_record_id = {}
+        matched_event_by_source = {}
+
+        for record in inserted_records:
+            record_epoch = datetime_to_epoch_second(record["timestamp_dt"])
+            candidates = []
+            for event in oc_events:
+                source_id = event.get("source_capture_id")
+                if not source_id:
+                    continue
+                delta_seconds = abs((event.get("timestamp_epoch") or 0) - record_epoch)
+                if delta_seconds > link_window_seconds:
+                    continue
+                if not openchronicle_event_matches_record(event, record):
+                    continue
+                has_app_context = bool(event.get("app_context") and app_context_title(event["app_context"]))
+                candidates.append((delta_seconds, 0 if has_app_context else 1, event))
+
+            candidates.sort(key=lambda item: (item[0], item[1]))
+            for delta_seconds, _priority, event in candidates[:max_events_per_record]:
+                match_reason = (
+                    f"{event['app_context'].get('surface')}_context"
+                    if event.get("app_context")
+                    else "same_app_nearby"
+                )
+                source_id = event.get("source_capture_id")
+                matched_event_by_source[source_id] = event
+                events_by_record_id.setdefault(record["id"], []).append({
+                    **event,
+                    "delta_seconds": float(delta_seconds),
+                    "match_reason": match_reason,
+                })
+
+        return events_by_record_id, list(matched_event_by_source.values())
+
+    def write_openchronicle_event_table(self, output_conn, oc_events):
+        if not oc_events:
+            return {}
+        cursor = output_conn.cursor()
+        source_ids = []
+        for event in oc_events:
+            source_id = event.get("source_capture_id")
+            if not source_id:
+                continue
+            source_ids.append(source_id)
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO openchronicle_events
+                (source_capture_id, timestamp, timestamp_epoch, app_name, bundle_id, window_title,
+                 event_type, focused_role, focused_value, visible_text, url,
+                 normalized_json, app_context_json, feishu_context_json, raw_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    format_db_timestamp(event["timestamp"]),
+                    event["timestamp_epoch"],
+                    event.get("app_name"),
+                    event.get("bundle_id"),
+                    event.get("window_title"),
+                    event.get("event_type"),
+                    event.get("focused_role"),
+                    event.get("focused_value"),
+                    event.get("visible_text"),
+                    event.get("url"),
+                    json.dumps(event.get("normalized") or {}, ensure_ascii=False),
+                    json.dumps(event.get("app_context"), ensure_ascii=False) if event.get("app_context") else None,
+                    json.dumps(event.get("feishu_context"), ensure_ascii=False) if event.get("feishu_context") else None,
+                    json.dumps(event.get("raw") or {}, ensure_ascii=False),
+                ),
+            )
+
+        if not source_ids:
+            output_conn.commit()
+            return {}
+        rows = []
+        for start in range(0, len(source_ids), 500):
+            chunk = source_ids[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(cursor.execute(
+                f"""
+                SELECT id, source_capture_id
+                FROM openchronicle_events
+                WHERE source_capture_id IN ({placeholders})
+                """,
+                chunk,
+            ).fetchall())
+        output_conn.commit()
+        return {source_capture_id: event_id for event_id, source_capture_id in rows}
+
+    def write_record_ax_event_links(self, output_conn, events_by_record_id, event_id_by_source):
+        if not events_by_record_id or not event_id_by_source:
+            return 0
+        cursor = output_conn.cursor()
+        link_count = 0
+
+        for record_id, events in events_by_record_id.items():
+            for event in events:
+                event_id = event_id_by_source.get(event.get("source_capture_id"))
+                if not event_id:
+                    continue
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO record_ax_events
+                    (record_id, openchronicle_event_id, delta_seconds, match_reason)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        record_id,
+                        event_id,
+                        float(event.get("delta_seconds") or 0.0),
+                        event.get("match_reason") or "same_app_nearby",
+                    ),
+                )
+                if cursor.rowcount:
+                    link_count += 1
+                event["id"] = event_id
+
+        output_conn.commit()
+        return link_count
+
+    def attach_openchronicle_events_to_records(self, inserted_records, events_by_record_id):
+        for record in inserted_records:
+            record["ax_events"] = events_by_record_id.get(record["id"], [])
+            app_context_event, app_context = select_app_context_event_for_records([record])
+            context_title = app_context_title(app_context)
+            if app_context and context_title:
+                record["view_window"] = context_title
+                record["app_context"] = app_context
+                if is_chat_app_context(app_context):
+                    context_json = {
+                        **app_context,
+                        "source_capture_id": (app_context_event or {}).get("source_capture_id"),
+                        "openchronicle_event_id": (app_context_event or {}).get("id"),
+                        "delta_seconds": (app_context_event or {}).get("delta_seconds"),
+                        "match_reason": (app_context_event or {}).get("match_reason"),
+                    }
+                    record["ax_window_title"] = context_title
+                    record["ax_chat_text"] = app_context_chat_text(app_context)
+                    record["ax_context_json"] = json.dumps(context_json, ensure_ascii=False)
+                    record["text_source"] = "ax_chat" if record["ax_chat_text"] else "ocr"
+                    if app_context.get("surface") == "messenger-chat":
+                        record["feishu_context"] = app_context
+                    elif app_context.get("surface") == "wechat-chat":
+                        record["wechat_context"] = app_context
+                elif app_context.get("surface") == "browser-tab":
+                    record["edge_context"] = app_context
+        return inserted_records
+
+    def update_record_ax_context_fields(self, output_conn, inserted_records):
+        cursor = output_conn.cursor()
+        updated_count = 0
+        for record in inserted_records:
+            if not record.get("ax_window_title") and not record.get("ax_chat_text") and not record.get("ax_context_json"):
+                continue
+            cursor.execute(
+                """
+                UPDATE records
+                SET ax_window_title = ?,
+                    ax_chat_text = ?,
+                    ax_context_json = ?,
+                    text_source = ?
+                WHERE id = ?
+                """,
+                (
+                    record.get("ax_window_title"),
+                    record.get("ax_chat_text"),
+                    record.get("ax_context_json"),
+                    record.get("text_source") or "ocr",
+                    record["id"],
+                ),
+            )
+            updated_count += cursor.rowcount
+        output_conn.commit()
+        return updated_count
 
     def select_records_to_keep(self, sp_rows, oc_events, min_quality=None):
         min_quality = self.min_quality if min_quality is None else min_quality
+        oc_event_seconds = self.build_openchronicle_event_second_index(oc_events)
 
         timeline = {}
         for row in sp_rows:
             ts_str, app_name, window_name, focused, text, frame_id = row
             try:
-                dt = datetime.fromisoformat(ts_str)
+                dt = parse_timestamp_to_utc(ts_str)
                 dt_sec = dt.replace(microsecond=0)
                 if dt_sec not in timeline:
                     timeline[dt_sec] = []
@@ -1184,7 +2002,10 @@ class PMECleaner:
                 else:
                     if focus_changed:
                         trigger = "focus_switch"
-                    elif (t, app.lower()) in oc_events and (t - last_t).total_seconds() >= self.ax_trigger_interval:
+                    elif (
+                        (datetime_to_epoch_second(t), normalize_app_key(app)) in oc_event_seconds
+                        and (t - last_t).total_seconds() >= self.ax_trigger_interval
+                    ):
                         trigger = "dynamic_ax_change"
                     elif (t - last_t).total_seconds() >= self.bg_interval:
                         trigger = "periodic_bg"
@@ -1212,7 +2033,7 @@ class PMECleaner:
 
                 last_text[app][window] = cleaned_text
                 kept_records.append({
-                    "timestamp": t.isoformat(),
+                    "timestamp": format_db_timestamp(t),
                     "timestamp_dt": t,
                     "app": app,
                     "window": window,
@@ -1240,16 +2061,21 @@ class PMECleaner:
                 """
                 INSERT INTO records
                 (timestamp, app_name, window_title, focused, ocr_text, cleaned_text,
+                 ax_window_title, ax_chat_text, ax_context_json, text_source,
                  ocr_quality_score, content_kind, trigger_reason, raw_frame_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    record["timestamp"],
+                    format_db_timestamp(record["timestamp"]),
                     record["app"],
                     record["window"],
                     record["focused"],
                     record["text"],
                     record["cleaned_text"],
+                    None,
+                    None,
+                    None,
+                    "ocr",
                     record["ocr_quality_score"],
                     record["content_kind"],
                     record["trigger"],
@@ -1259,13 +2085,17 @@ class PMECleaner:
             memory_id = cursor.lastrowid
             inserted_records.append({
                 "id": memory_id,
-                "timestamp": record["timestamp"],
+                "timestamp": format_db_timestamp(record["timestamp"]),
                 "timestamp_dt": record["timestamp_dt"],
                 "app": record["app"],
                 "window": record["window"],
                 "focused": record["focused"],
                 "text": record["text"],
                 "cleaned_text": record["cleaned_text"],
+                "ax_window_title": None,
+                "ax_chat_text": None,
+                "ax_context_json": None,
+                "text_source": "ocr",
                 "ocr_quality_score": record["ocr_quality_score"],
                 "content_kind": record["content_kind"],
                 "trigger": record["trigger"],
@@ -1312,12 +2142,31 @@ class PMECleaner:
             "window_workstream_llm_failed_count": 0,
             "task_workstream_llm_generation_count": 0,
             "task_workstream_llm_failed_count": 0,
+            "openchronicle_events": 0,
+            "record_ax_event_links": 0,
+            "record_ax_context_updates": 0,
         })
         if not kept_records:
             stats.update(self.get_workstream_stats(output_conn))
             return stats
 
         inserted_records = self.write_record_table(output_conn, kept_records)
+        events_by_record_id, matched_oc_events = self.select_openchronicle_events_for_records(
+            inserted_records,
+            oc_events,
+        )
+        event_id_by_source = self.write_openchronicle_event_table(output_conn, matched_oc_events)
+        record_ax_event_links = self.write_record_ax_event_links(
+            output_conn,
+            events_by_record_id,
+            event_id_by_source,
+        )
+        self.attach_openchronicle_events_to_records(inserted_records, events_by_record_id)
+        record_ax_context_updates = self.update_record_ax_context_fields(output_conn, inserted_records)
+        stats["openchronicle_events"] = len(matched_oc_events)
+        stats["record_ax_event_links"] = record_ax_event_links
+        stats["record_ax_context_updates"] = record_ax_context_updates
+
         segment_llm_budget = segment_config.get("llm_budget", 0) if segment_config else 0
         if view_config:
             view_gap_minutes = view_config.get("gap_minutes") or segment_gap_minutes
@@ -1498,7 +2347,7 @@ class PMECleaner:
     def generate_segment_using_llm(self, segment_summary, config, view_infos=None):
         payload = self.build_llm_segment_payload(segment_summary, view_infos=view_infos)
         payload_hash = self.hash_llm_payload(payload)
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
 
         try:
             user_prompt = SEGMENT_LLM_USER_PROMPT_TEMPLATE.format(
@@ -1609,7 +2458,7 @@ class PMECleaner:
     def generate_window_workstream_using_llm(self, workstream, config):
         payload = self.build_window_workstream_llm_payload(workstream)
         payload_hash = self.hash_llm_payload(payload)
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
 
         try:
             user_prompt = WINDOW_WORKSTREAM_LLM_USER_PROMPT_TEMPLATE.format(
@@ -1758,8 +2607,8 @@ class PMECleaner:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                segment_summary["start_timestamp"],
-                segment_summary["end_timestamp"],
+                format_db_timestamp(segment_summary["start_timestamp"]),
+                format_db_timestamp(segment_summary["end_timestamp"]),
                 segment_summary["duration_seconds"],
                 segment_summary["activity_type"],
                 segment_summary["project_hint"],
@@ -1785,7 +2634,7 @@ class PMECleaner:
     def generate_view_record_entries(self, records, gap_minutes=8, max_view_minutes=30):
         records_by_window = {}
         for record in records:
-            key = (record.get("app"), record.get("window"))
+            key = (record.get("app"), record.get("view_window") or record.get("window"))
             records_by_window.setdefault(key, []).append(record)
 
         gap = timedelta(minutes=gap_minutes)
@@ -1902,8 +2751,8 @@ class PMECleaner:
                 view_summary["app_name"],
                 view_summary["window_title"],
                 view_summary["content_kind"],
-                view_summary["start_timestamp"],
-                view_summary["end_timestamp"],
+                format_db_timestamp(view_summary["start_timestamp"]),
+                format_db_timestamp(view_summary["end_timestamp"]),
                 view_summary["visible_content_summary"],
                 view_summary["representative_text"],
                 view_summary["topics_json"],
@@ -1936,8 +2785,8 @@ class PMECleaner:
                     view_id,
                     segment_id,
                     slice_info["record_count"],
-                    slice_info["start_timestamp"],
-                    slice_info["end_timestamp"],
+                    format_db_timestamp(slice_info["start_timestamp"]),
+                    format_db_timestamp(slice_info["end_timestamp"]),
                     slice_info["visible_content_summary"],
                     slice_info["representative_text"],
                     slice_info["evidence_ids_json"],
@@ -2581,7 +3430,7 @@ class PMECleaner:
         return workstream_entry
     
     def save_window_workstream(self, cursor, workstream_entry):
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
         cursor.execute(
             """
             INSERT INTO window_workstream
@@ -2595,8 +3444,8 @@ class PMECleaner:
                 workstream_entry["title"],
                 workstream_entry["summary"],
                 workstream_entry["category"],
-                workstream_entry["start_timestamp"],
-                workstream_entry["end_timestamp"],
+                format_db_timestamp(workstream_entry["start_timestamp"]),
+                format_db_timestamp(workstream_entry["end_timestamp"]),
                 workstream_entry["topics_json"],
                 workstream_entry["entities_json"],
                 workstream_entry["artifacts_json"],
@@ -2634,7 +3483,7 @@ class PMECleaner:
         return window_workstream_id
 
     def update_window_workstream(self, cursor, workstream_entry):
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
         window_workstream_id = workstream_entry["id"]
         cursor.execute(
             """
@@ -2665,8 +3514,8 @@ class PMECleaner:
                 workstream_entry["title"],
                 workstream_entry["summary"],
                 workstream_entry["category"],
-                workstream_entry["start_timestamp"],
-                workstream_entry["end_timestamp"],
+                format_db_timestamp(workstream_entry["start_timestamp"]),
+                format_db_timestamp(workstream_entry["end_timestamp"]),
                 workstream_entry["topics_json"],
                 workstream_entry["entities_json"],
                 workstream_entry["artifacts_json"],
@@ -3234,7 +4083,7 @@ class PMECleaner:
     def generate_task_workstream_using_llm(self, task, config):
         payload = self.build_task_workstream_llm_payload(task)
         payload_hash = self.hash_llm_payload(payload)
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
         try:
             user_prompt = TASK_WORKSTREAM_LLM_USER_PROMPT_TEMPLATE.format(
                 payload_json=json.dumps(payload, ensure_ascii=False)
@@ -3293,7 +4142,7 @@ class PMECleaner:
         return task_entry
 
     def save_task_workstream(self, cursor, task_entry):
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
         cursor.execute(
             """
             INSERT INTO task_workstream
@@ -3308,8 +4157,8 @@ class PMECleaner:
                 task_entry["title"],
                 task_entry["summary"],
                 task_entry["category"],
-                task_entry["start_timestamp"],
-                task_entry["end_timestamp"],
+                format_db_timestamp(task_entry["start_timestamp"]),
+                format_db_timestamp(task_entry["end_timestamp"]),
                 task_entry["topics_json"],
                 task_entry["entities_json"],
                 task_entry["artifacts_json"],
@@ -3348,7 +4197,7 @@ class PMECleaner:
         return task_workstream_id
 
     def update_task_workstream(self, cursor, task_entry):
-        now = datetime.now(timezone.utc).isoformat()
+        now = now_db_timestamp()
         task_workstream_id = task_entry["id"]
         cursor.execute(
             """
@@ -3380,8 +4229,8 @@ class PMECleaner:
                 task_entry["title"],
                 task_entry["summary"],
                 task_entry["category"],
-                task_entry["start_timestamp"],
-                task_entry["end_timestamp"],
+                format_db_timestamp(task_entry["start_timestamp"]),
+                format_db_timestamp(task_entry["end_timestamp"]),
                 task_entry["topics_json"],
                 task_entry["entities_json"],
                 task_entry["artifacts_json"],
@@ -3619,52 +4468,48 @@ class PMECleaner:
         
         return stats
 
-    def filter_incomplete_data(self, sp_rows, oc_events, start_time, end_time, bucket_minutes=10):
-        if not oc_events:
-            print(
-                "OpenChronicle events are unavailable in this window. "
-                f"Running in Screenpipe-only mode and keeping all {len(sp_rows)} OCR rows."
-            )
-            return sp_rows, 0
-        
-        # OpenChronicle events buckets
+    def inspect_openchronicle_coverage(self, sp_rows, oc_events, start_time, bucket_minutes=10):
         oc_buckets = set()
-        for t_utc_sec, app_name in oc_events:
-            delta = t_utc_sec - start_time
+        for event in oc_events or []:
+            event_dt = event.get("timestamp_dt")
+            if event_dt is None:
+                continue
+            delta = event_dt - start_time
             bucket_idx = int(delta.total_seconds() // (bucket_minutes * 60))
             oc_buckets.add(bucket_idx)
-            
-        # Group Screenpipe rows by bucket
+
         sp_buckets = {}
         for row in sp_rows:
             ts_str = row[0]
             try:
-                # Remove Z and parse timezone
-                dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                dt_utc = dt.astimezone(timezone.utc)
+                dt_utc = parse_timestamp_to_utc(ts_str)
                 delta = dt_utc - start_time
                 bucket_idx = int(delta.total_seconds() // (bucket_minutes * 60))
-                if bucket_idx not in sp_buckets:
-                    sp_buckets[bucket_idx] = []
-                sp_buckets[bucket_idx].append(row)
+                sp_buckets.setdefault(bucket_idx, []).append(row)
             except Exception:
                 continue
-                
-        # Rebuild filtered sp_rows
-        filtered_sp_rows = []
-        discarded_count = 0
-        
-        # Loop through buckets having Screenpipe data
-        for bucket_idx, rows in sorted(sp_buckets.items()):
-            if bucket_idx in oc_buckets:
-                # Both databases have data in this 10-minute interval
-                filtered_sp_rows.extend(rows)
-            else:
-                # Incomplete data: Screenpipe has data, but OpenChronicle has 0 events
-                discarded_count += len(rows)
-                
-        print(f"Filter incomplete data (10-minute buckets): kept {len(filtered_sp_rows)} rows, discarded {discarded_count} rows.")
-        return filtered_sp_rows, discarded_count
+
+        sp_bucket_count = len(sp_buckets)
+        covered_bucket_count = sum(1 for bucket_idx in sp_buckets if bucket_idx in oc_buckets)
+        missing_bucket_count = max(0, sp_bucket_count - covered_bucket_count)
+        coverage_ratio = covered_bucket_count / sp_bucket_count if sp_bucket_count else 0.0
+        if not oc_events:
+            print(
+                "OpenChronicle events are unavailable in this window. "
+            )
+        else:
+            print(
+                "OpenChronicle coverage "
+                f"({bucket_minutes}-minute buckets): {covered_bucket_count}/{sp_bucket_count} "
+                f"Screenpipe buckets have AXTree captures. Keeping all {len(sp_rows)} OCR rows."
+            )
+        return {
+            "discarded_incomplete_records": 0,
+            "openchronicle_coverage_bucket_minutes": bucket_minutes,
+            "openchronicle_covered_buckets": covered_bucket_count,
+            "openchronicle_missing_buckets": missing_bucket_count,
+            "openchronicle_coverage_ratio": round(coverage_ratio, 3),
+        }
 
     def clean(
         self,
@@ -3694,18 +4539,12 @@ class PMECleaner:
 
         # Parse start and end times
         if start_time_str:
-            dt_start = datetime.fromisoformat(start_time_str)
-            if dt_start.tzinfo is None:
-                dt_start = dt_start.astimezone(timezone.utc)
-            start_time = dt_start
+            start_time = parse_user_time_to_utc(start_time_str)
         else:
             start_time = datetime.now(timezone.utc) - timedelta(days=days)
             
         if end_time_str:
-            dt_end = datetime.fromisoformat(end_time_str)
-            if dt_end.tzinfo is None:
-                dt_end = dt_end.astimezone(timezone.utc)
-            end_time = dt_end
+            end_time = parse_user_time_to_utc(end_time_str)
         else:
             end_time = datetime.now(timezone.utc)
             
@@ -3726,10 +4565,10 @@ class PMECleaner:
             oc_events = self.load_openchronicle_events(start_time, end_time)
         except Exception as e:
             print(f"Error reading OpenChronicle: {e}")
-            oc_events = set()
-            
-        # Filter out intervals with incomplete data
-        sp_rows, discarded_count = self.filter_incomplete_data(sp_rows, oc_events, start_time, end_time)
+            oc_events = []
+
+        # inspect matching
+        coverage_stats = self.inspect_openchronicle_coverage(sp_rows, oc_events, start_time)
 
         # Clean
         stats = self.process_cleaning(
@@ -3751,8 +4590,7 @@ class PMECleaner:
         # Restore original cleaned_db path (in case it was overridden)
         self.cleaned_db = original_cleaned_db
         
-        # Add discarded count to stats
-        stats["discarded_incomplete_records"] = discarded_count
+        stats.update(coverage_stats)
         
         print("\n" + "="*50)
         mode_label = "INCREMENTAL" if incremental else "FULL RESET"
@@ -3761,7 +4599,11 @@ class PMECleaner:
         print(f"Output Path: {stats.get('output_path', 'N/A')}")
         print(f"Raw Records: {stats.get('raw_records', 0)}")
         print(f"Discarded Incomplete Records: {stats.get('discarded_incomplete_records', 0)}")
+        print(f"OpenChronicle Coverage Ratio: {stats.get('openchronicle_coverage_ratio', 0):.3f}")
         print(f"Cleaned Records: {stats.get('cleaned_records', 0)}")
+        print(f"OpenChronicle Events: {stats.get('openchronicle_events', 0)}")
+        print(f"Record AX Event Links: {stats.get('record_ax_event_links', 0)}")
+        print(f"Record AX Context Updates: {stats.get('record_ax_context_updates', 0)}")
         print(f"Deduplicated (Skipped): {stats.get('deduplicated', 0)}")
         print(f"Ignored Apps (Skipped): {stats.get('ignored_app', 0)}")
         print(f"Unfocused System Apps (Skipped): {stats.get('unfocused_system_app', 0)}")
