@@ -269,22 +269,133 @@ def extract_artifacts(window, text):
     return cleaned[:12]
 
 
+ENTITY_STOPWORDS = {
+    "api",
+    "rag",
+    "pro",
+    "token",
+    "tokens",
+    "http",
+    "https",
+    "www",
+    "com",
+}
+
+ENTITY_CHAT_PHRASES = {
+    "不过",
+    "但是",
+    "然后",
+    "现在",
+    "最近",
+    "大概",
+    "这个",
+    "那个",
+    "还是",
+    "已经",
+    "可以",
+    "不能",
+    "不会",
+    "没有",
+    "觉得",
+    "哈哈",
+    "发送给",
+    "已编辑",
+}
+
+CONTEXT_PERSON_NOISE_WORDS = {
+    "是的",
+    "省事",
+    "已编辑",
+    "便宜大碗",
+    "发送给",
+    "消息",
+    "文件",
+    "云文档",
+}
+
+
+def clean_entity_candidate(value):
+    value = re.sub(r"\(\s*\)$", "", str(value or ""))
+    return value.strip(" \t\r\n.,;:!?，。；：！？、()（）[]【】{}<>\"'")
+
+
+def is_valid_entity_candidate(value):
+    value = clean_entity_candidate(value)
+    if not value:
+        return False
+    if "\n" in value or "\r" in value:
+        return False
+    key = normalize_signature_text(value)
+    if not key or key in ENTITY_STOPWORDS:
+        return False
+    if re.fullmatch(r"\d+(?::\d+)?", value):
+        return False
+    if len(value) > 32:
+        return False
+    if re.search(r"[，。！？；、]", value):
+        return False
+    if any(phrase in value for phrase in ENTITY_CHAT_PHRASES):
+        return False
+
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", value)
+    ascii_words = re.findall(r"[A-Za-z][A-Za-z0-9_+-]*", value)
+    if len(chinese_chars) > 8:
+        return False
+    if len(value.split()) > 3:
+        return False
+    if chinese_chars and len(chinese_chars) >= 2 and not ascii_words:
+        return True
+    if ascii_words:
+        if any(re.search(r"[A-Z]", word) and len(word) >= 3 for word in ascii_words):
+            return True
+        if re.search(r"[._()]", value):
+            return True
+    return False
+
+
+def is_valid_context_person_candidate(value):
+    value = clean_entity_candidate(normalize_conversation_title(value))
+    if not value or value in CONTEXT_PERSON_NOISE_WORDS:
+        return False
+    if len(value) > 16:
+        return False
+    if re.search(r"\d|[，。！？；、:/\\]", value):
+        return False
+    if any(phrase in value for phrase in ENTITY_CHAT_PHRASES):
+        return False
+    if re.search(r"的|了|是|我|你|他|她|它|这|那|吗|吧|呢|啊|哈|月|钱|刀|收费|模式|防抖|悬停|随行|发送|编辑|便宜|省事|大碗", value):
+        return False
+
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", value)
+    ascii_words = re.findall(r"[A-Za-z][A-Za-z0-9_+-]*", value)
+    if chinese_chars and len(chinese_chars) <= 4 and len(chinese_chars) == len(value):
+        return True
+    if ascii_words and is_valid_entity_candidate(value):
+        return True
+    return False
+
+
 def extract_entities(window, text):
     source = "\n".join([window or "", text or ""])
     patterns = [
         r"\b[A-Za-z_][A-Za-z0-9_]{2,}\.[A-Za-z_][A-Za-z0-9_.]*\b",
-        r"\b[A-Za-z_][A-Za-z0-9_]{2,}\([^)]{0,40}\)",
+        r"\b([A-Za-z_][A-Za-z0-9_]{2,})\([^)\n]{0,40}\)",
         r"\b[A-Z][A-Za-z0-9_]{2,}(?:[A-Z][A-Za-z0-9_]*)+\b",
+        r"\b[A-Z]{2,}\b",
+        r"\b[A-Z][A-Za-z0-9_+-]{2,}(?:[ \t]+[A-Z][A-Za-z0-9_+-]{1,}){0,2}\b",
         r"\b(?:class|def|function|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)",
-        r"[\u4e00-\u9fffA-Za-z0-9_]+(?:表|字段|函数|类|配置|数据库|模型|项目)",
+        r"[\u4e00-\u9fffA-Za-z0-9_]{1,16}(?:表|字段|函数|类|配置|数据库|模型|项目)",
     ]
     entities = []
+    seen = set()
     for pattern in patterns:
         for match in re.findall(pattern, source):
             entity = match[0] if isinstance(match, tuple) else match
-            entity = re.sub(r"\(\s*\)$", "", str(entity)).strip(".,;:()[]{}<>\"'")
-            if entity and normalize_signature_text(entity) not in {normalize_signature_text(item) for item in entities}:
+            entity = clean_entity_candidate(entity)
+            key = normalize_signature_text(entity)
+            if key and key not in seen and is_valid_entity_candidate(entity):
                 entities.append(entity)
+                seen.add(key)
             if len(entities) >= 20:
                 return entities
     return entities
@@ -531,6 +642,10 @@ def get_record_text_for_view(record):
     return (record.get("ax_chat_text") or record.get("cleaned_text") or record.get("text") or "").strip()
 
 
+def get_record_text_for_entity(record):
+    return (record.get("ax_chat_text") or record.get("cleaned_text") or record.get("text") or "").strip()
+
+
 def is_low_value_wechat_line(value):
     if not value:
         return True
@@ -626,7 +741,7 @@ def extract_feishu_messenger_chat_context(visible_text):
 
     visible_people = []
     for value in message_lines:
-        if len(value) <= 24 and not re.search(r"https?://|[。！？!?]{1}|RuntimeError|Cron|Response", value):
+        if is_valid_context_person_candidate(value):
             append_unique(visible_people, [value], limit=12)
 
     summary_parts = [f"飞书聊天「{conversation_title}」"]
@@ -1103,11 +1218,22 @@ def summarize_view(records):
     if app_context and app_context.get("surface") == "browser-tab":
         append_unique(artifacts, [app_context.get("url")], limit=20)
     entities = []
+    has_ax_chat_text = any(record.get("ax_chat_text") for record in sorted_records)
     for record in sorted_records:
-        append_unique(entities, extract_entities(record["window"], get_record_text_for_view(record)), limit=30)
+        if has_ax_chat_text and not record.get("ax_chat_text"):
+            continue
+        append_unique(entities, extract_entities(record["window"], get_record_text_for_entity(record)), limit=30)
     if app_context:
         append_unique(entities, [context_title], limit=30)
-        append_unique(entities, app_context.get("visible_people") or [], limit=30)
+        append_unique(
+            entities,
+            [
+                value
+                for value in app_context.get("visible_people") or []
+                if is_valid_context_person_candidate(value)
+            ],
+            limit=30,
+        )
 
     representative = sorted(
         sorted_records,
@@ -1799,15 +1925,21 @@ class PMECleaner:
                     return True
         return False
 
-    def select_openchronicle_events_for_records(self, inserted_records, oc_events):
-        if not inserted_records or not oc_events:
+    def select_openchronicle_events_for_records(self, records, oc_events):
+        if not records or not oc_events:
             return {}, []
         link_window_seconds = self.config.get("openchronicle", {}).get("record_link_window_seconds", 6)
         max_events_per_record = self.config.get("openchronicle", {}).get("max_events_per_record", 3)
-        events_by_record_id = {}
+        events_by_record_key = {}
         matched_event_by_source = {}
 
-        for record in inserted_records:
+        for record_index, record in enumerate(records):
+            record_key = record.get("id")
+            if record_key is None:
+                record_key = record.get("_record_key")
+            if record_key is None:
+                record_key = f"pending:{record_index}"
+                record["_record_key"] = record_key
             record_epoch = datetime_to_epoch_second(record["timestamp_dt"])
             candidates = []
             for event in oc_events:
@@ -1831,13 +1963,13 @@ class PMECleaner:
                 )
                 source_id = event.get("source_capture_id")
                 matched_event_by_source[source_id] = event
-                events_by_record_id.setdefault(record["id"], []).append({
+                events_by_record_key.setdefault(record_key, []).append({
                     **event,
                     "delta_seconds": float(delta_seconds),
                     "match_reason": match_reason,
                 })
 
-        return events_by_record_id, list(matched_event_by_source.values())
+        return events_by_record_key, list(matched_event_by_source.values())
 
     def write_openchronicle_event_table(self, output_conn, oc_events):
         if not oc_events:
@@ -1925,9 +2057,12 @@ class PMECleaner:
         output_conn.commit()
         return link_count
 
-    def attach_openchronicle_events_to_records(self, inserted_records, events_by_record_id):
-        for record in inserted_records:
-            record["ax_events"] = events_by_record_id.get(record["id"], [])
+    def attach_openchronicle_events_to_records(self, records, events_by_record_key):
+        for record in records:
+            record_key = record.get("id")
+            if record_key is None:
+                record_key = record.get("_record_key")
+            record["ax_events"] = events_by_record_key.get(record_key, [])
             app_context_event, app_context = select_app_context_event_for_records([record])
             context_title = app_context_title(app_context)
             if app_context and context_title:
@@ -1961,34 +2096,29 @@ class PMECleaner:
                     record["ax_context_json"] = json.dumps(context_json, ensure_ascii=False)
                     record["text_source"] = "ocr"
                     record["edge_context"] = app_context
-        return inserted_records
+        return records
 
-    def update_record_ax_context_fields(self, output_conn, inserted_records):
-        cursor = output_conn.cursor()
-        updated_count = 0
-        for record in inserted_records:
-            if not record.get("ax_window_title") and not record.get("ax_chat_text") and not record.get("ax_context_json"):
-                continue
-            cursor.execute(
-                """
-                UPDATE records
-                SET ax_window_title = ?,
-                    ax_chat_text = ?,
-                    ax_context_json = ?,
-                    text_source = ?
-                WHERE id = ?
-                """,
-                (
-                    record.get("ax_window_title"),
-                    record.get("ax_chat_text"),
-                    record.get("ax_context_json"),
-                    record.get("text_source") or "ocr",
-                    record["id"],
-                ),
-            )
-            updated_count += cursor.rowcount
-        output_conn.commit()
-        return updated_count
+    def apply_openchronicle_event_ids(self, events_by_record_key, event_id_by_source):
+        for events in events_by_record_key.values():
+            for event in events:
+                event_id = event_id_by_source.get(event.get("source_capture_id"))
+                if event_id:
+                    event["id"] = event_id
+        return events_by_record_key
+
+    def map_record_ax_events_by_inserted_id(self, inserted_records):
+        return {
+            record["id"]: record.get("ax_events") or []
+            for record in inserted_records
+            if record.get("ax_events")
+        }
+
+    def count_record_ax_context_records(self, records):
+        return sum(
+            1
+            for record in records
+            if record.get("ax_window_title") or record.get("ax_chat_text") or record.get("ax_context_json")
+        )
 
     def select_records_to_keep(self, sp_rows, oc_events, discarded_oc_events=None, min_quality=None):
         min_quality = self.min_quality if min_quality is None else min_quality
@@ -2163,10 +2293,10 @@ class PMECleaner:
                     record["focused"],
                     record["text"],
                     record["cleaned_text"],
-                    None,
-                    None,
-                    None,
-                    "ocr",
+                    record.get("ax_window_title"),
+                    record.get("ax_chat_text"),
+                    record.get("ax_context_json"),
+                    record.get("text_source") or "ocr",
                     record["ocr_quality_score"],
                     record["content_kind"],
                     record["trigger"],
@@ -2183,13 +2313,20 @@ class PMECleaner:
                 "focused": record["focused"],
                 "text": record["text"],
                 "cleaned_text": record["cleaned_text"],
-                "ax_window_title": None,
-                "ax_chat_text": None,
-                "ax_context_json": None,
-                "text_source": "ocr",
+                "ax_window_title": record.get("ax_window_title"),
+                "ax_chat_text": record.get("ax_chat_text"),
+                "ax_context_json": record.get("ax_context_json"),
+                "text_source": record.get("text_source") or "ocr",
                 "ocr_quality_score": record["ocr_quality_score"],
                 "content_kind": record["content_kind"],
                 "trigger": record["trigger"],
+                "_record_key": record.get("_record_key"),
+                "view_window": record.get("view_window"),
+                "app_context": record.get("app_context"),
+                "feishu_context": record.get("feishu_context"),
+                "wechat_context": record.get("wechat_context"),
+                "edge_context": record.get("edge_context"),
+                "ax_events": record.get("ax_events") or [],
             })
 
         output_conn.commit()
@@ -2247,22 +2384,23 @@ class PMECleaner:
             stats.update(self.get_workstream_stats(output_conn))
             return stats
 
-        inserted_records = self.write_record_table(output_conn, kept_records)
-        events_by_record_id, matched_oc_events = self.select_openchronicle_events_for_records(
-            inserted_records,
+        events_by_record_key, matched_oc_events = self.select_openchronicle_events_for_records(
+            kept_records,
             oc_events,
         )
         event_id_by_source = self.write_openchronicle_event_table(output_conn, matched_oc_events)
+        self.apply_openchronicle_event_ids(events_by_record_key, event_id_by_source)
+        self.attach_openchronicle_events_to_records(kept_records, events_by_record_key)
+        inserted_records = self.write_record_table(output_conn, kept_records)
+        events_by_record_id = self.map_record_ax_events_by_inserted_id(inserted_records)
         record_ax_event_links = self.write_record_ax_event_links(
             output_conn,
             events_by_record_id,
             event_id_by_source,
         )
-        self.attach_openchronicle_events_to_records(inserted_records, events_by_record_id)
-        record_ax_context_updates = self.update_record_ax_context_fields(output_conn, inserted_records)
         stats["openchronicle_events"] = len(matched_oc_events)
         stats["record_ax_event_links"] = record_ax_event_links
-        stats["record_ax_context_updates"] = record_ax_context_updates
+        stats["record_ax_context_updates"] = self.count_record_ax_context_records(inserted_records)
 
         segment_llm_budget = segment_config.get("llm_budget", 0) if segment_config else 0
         if view_config:
@@ -3500,7 +3638,7 @@ class PMECleaner:
             "llm_updated_at": workstream.get("llm_updated_at"),
         }
 
-    def apply_window_workstream_llm_fields(self, workstream_entry, llm_fields):
+    def insert_llm_fields_into_window_workstream(self, workstream_entry, llm_fields):
         if llm_fields.get("summary"):
             workstream_entry["summary"] = llm_fields["summary"]
         if llm_fields.get("category"):
@@ -4213,7 +4351,7 @@ class PMECleaner:
                 "llm_updated_at": now,
             }, False, str(e)
 
-    def apply_task_workstream_llm_fields(self, task_entry, llm_fields):
+    def insert_llm_fields_into_task_workstream(self, task_entry, llm_fields):
         for key in ["title", "summary", "category"]:
             if llm_fields.get(key):
                 task_entry[key] = llm_fields[key]
@@ -4461,7 +4599,7 @@ class PMECleaner:
                     f"({llm_generation_count + llm_failed_count + 1}/{llm_budget})..."
                 )
                 llm_fields, ok, error = self.generate_task_workstream_using_llm(task, task_cfg)
-                self.apply_task_workstream_llm_fields(task_entry, llm_fields)
+                self.insert_llm_fields_into_task_workstream(task_entry, llm_fields)
                 if ok is True:
                     llm_generation_count += 1
                 else:
@@ -4538,7 +4676,7 @@ class PMECleaner:
                     f"({llm_generation_count + llm_failed_count + 1}/{llm_budget})..."
                 )
                 llm_fields, ok, error = self.generate_window_workstream_using_llm(workstream, self.window_workstream_cfg)
-                self.apply_window_workstream_llm_fields(workstream_entry, llm_fields)
+                self.insert_llm_fields_into_window_workstream(workstream_entry, llm_fields)
                 if ok is True:
                     llm_generation_count += 1
                 else:
