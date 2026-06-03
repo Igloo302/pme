@@ -3207,7 +3207,9 @@ class PMECleaner:
                 llm_status,
                 llm_error,
                 llm_hash,
-                llm_updated_at
+                llm_updated_at,
+                created_at,
+                updated_at
             FROM window_workstream
             ORDER BY start_timestamp ASC, id ASC
         """)
@@ -3271,6 +3273,8 @@ class PMECleaner:
                 "llm_error": item.get("llm_error"),
                 "llm_hash": item.get("llm_hash"),
                 "llm_updated_at": item.get("llm_updated_at"),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
             }
             window_workstream.append(workstream)
         for workstream in window_workstream:
@@ -3571,6 +3575,65 @@ class PMECleaner:
             f"+top{len(top_scores)}avg:{top_k_avg:.2f}"
         )
 
+    def get_workstream_primary_match_since(self, config):
+        mode = (config or {}).get("primary_match_since", "current_week")
+        if mode in {None, "", "all"}:
+            return None
+        now = datetime.now(DATABASE_TIMEZONE)
+        if mode == "current_day":
+            return now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if mode == "current_week":
+            day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            return day_start - timedelta(days=day_start.weekday())
+        if mode == "recent_days":
+            days = int((config or {}).get("primary_match_recent_days", 7))
+            return now - timedelta(days=max(1, days))
+        parsed = parse_iso_datetime(mode)
+        return parsed
+
+    def is_workstream_active_since(self, workstream, since_dt):
+        if workstream.get("id") is None:
+            return True
+        if since_dt is None:
+            return True
+        updated_dt = parse_iso_datetime(workstream.get("updated_at"))
+        if not updated_dt:
+            updated_dt = parse_iso_datetime(workstream.get("end_timestamp"))
+        return bool(updated_dt and updated_dt >= since_dt)
+
+    def view_cluster_signature_sets(self, cluster):
+        views = cluster.get("views") or []
+        return {
+            "app_keys": {view.get("app_key") for view in views if view.get("app_key")},
+            "title_keys": {view.get("title_key") for view in views if view.get("title_key")},
+            "artifact_keys": set().union(*(view.get("artifact_keys") or set() for view in views)) if views else set(),
+            "entity_keys": set().union(*(view.get("entity_keys") or set() for view in views)) if views else set(),
+        }
+
+    def is_strong_historical_window_candidate(self, cluster, workstream):
+        if workstream.get("id") is None:
+            return True
+        signatures = self.view_cluster_signature_sets(cluster)
+        if not signatures["app_keys"] or not signatures["app_keys"].intersection(workstream.get("app_keys") or set()):
+            return False
+        if signatures["title_keys"] and signatures["title_keys"].intersection(workstream.get("title_keys") or set()):
+            return True
+        if signatures["artifact_keys"] and signatures["artifact_keys"].intersection(workstream.get("artifact_keys") or set()):
+            return True
+        min_entity_overlap = self.window_workstream_cfg.get("historical_min_entity_overlap", 2)
+        entity_overlap = signatures["entity_keys"].intersection(workstream.get("entity_keys") or set())
+        return len(entity_overlap) >= min_entity_overlap
+
+    def filter_window_workstream_candidates(self, cluster, window_workstreams, primary_since):
+        active_candidates = []
+        historical_candidates = []
+        for workstream in window_workstreams:
+            if self.is_workstream_active_since(workstream, primary_since):
+                active_candidates.append(workstream)
+            elif self.is_strong_historical_window_candidate(cluster, workstream):
+                historical_candidates.append(workstream)
+        return active_candidates + historical_candidates
+
     def add_view_cluster_to_window_workstream(self, workstream, cluster, relevance, reason):
         for view in cluster.get("views") or []:
             self.add_view_to_window_workstream(workstream, view, relevance, reason)
@@ -3817,7 +3880,9 @@ class PMECleaner:
                 ww.window_titles_json,
                 ww.view_count,
                 ww.segment_count,
-                ww.confidence
+                ww.confidence,
+                ww.created_at,
+                ww.updated_at
             FROM window_workstream ww
             {where_clause}
             ORDER BY ww.start_timestamp ASC, ww.id ASC
@@ -3863,6 +3928,8 @@ class PMECleaner:
                 "view_count": item.get("view_count") or 0,
                 "segment_count": item.get("segment_count") or 0,
                 "confidence": max(0.0, min(1.0, confidence)),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
             })
         return items
 
@@ -4060,7 +4127,9 @@ class PMECleaner:
                 llm_status,
                 llm_error,
                 llm_hash,
-                llm_updated_at
+                llm_updated_at,
+                created_at,
+                updated_at
             FROM task_workstream
             ORDER BY start_timestamp ASC, id ASC
         """)
@@ -4114,6 +4183,8 @@ class PMECleaner:
                 "llm_error": item.get("llm_error"),
                 "llm_hash": item.get("llm_hash"),
                 "llm_updated_at": item.get("llm_updated_at"),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
             }
             tasks.append(task)
         for task in tasks:
@@ -4174,6 +4245,42 @@ class PMECleaner:
         if score < min_relevance:
             return 0.0, "below_cluster_task_threshold"
         return round(min(1.0, score), 3), f"cluster_to_task+support:{len(positive_scores)}/{len(scores)}"
+
+    def window_cluster_signature_sets(self, cluster):
+        items = cluster.get("window_workstreams") or []
+        return {
+            "artifact_keys": set().union(*(item.get("artifact_keys") or set() for item in items)) if items else set(),
+            "entity_keys": set().union(*(item.get("entity_keys") or set() for item in items)) if items else set(),
+            "topic_keys": set().union(*(item.get("topic_keys") or set() for item in items)) if items else set(),
+            "tokens": set().union(*(item.get("tokens") or set() for item in items)) if items else set(),
+        }
+
+    def is_strong_historical_task_candidate(self, cluster, task):
+        if task.get("id") is None:
+            return True
+        signatures = self.window_cluster_signature_sets(cluster)
+        if signatures["artifact_keys"] and signatures["artifact_keys"].intersection(task.get("artifact_keys") or set()):
+            return True
+        entity_overlap = signatures["entity_keys"].intersection(task.get("entity_keys") or set())
+        min_entity_overlap = (self.task_workstream_cfg or {}).get("historical_min_entity_overlap", 2)
+        if len(entity_overlap) >= min_entity_overlap:
+            text_score = jaccard_similarity(signatures["tokens"], task.get("tokens") or set())
+            min_text_score = (self.task_workstream_cfg or {}).get("historical_entity_text_min_score", 0.08)
+            return text_score >= min_text_score
+        topic_overlap = signatures["topic_keys"].intersection(task.get("topic_keys") or set())
+        if topic_overlap and entity_overlap:
+            return True
+        return False
+
+    def filter_task_workstream_candidates(self, cluster, tasks, primary_since):
+        active_candidates = []
+        historical_candidates = []
+        for task in tasks:
+            if self.is_workstream_active_since(task, primary_since):
+                active_candidates.append(task)
+            elif self.is_strong_historical_task_candidate(cluster, task):
+                historical_candidates.append(task)
+        return active_candidates + historical_candidates
 
     def add_window_cluster_to_task(self, task, cluster, relevance, reason):
         for item in cluster.get("window_workstreams") or []:
@@ -4563,12 +4670,14 @@ class PMECleaner:
 
         clusters = self.cluster_current_window_workstreams_for_task(window_workstreams)
         tasks = self.load_existing_task_workstreams(cursor)
+        primary_match_since = self.get_workstream_primary_match_since(task_cfg)
         touched_tasks = set()
         for cluster in clusters:
             best_task = None
             best_score = 0.0
             best_reason = None
-            for task in tasks:
+            task_candidates = self.filter_task_workstream_candidates(cluster, tasks, primary_match_since)
+            for task in task_candidates:
                 score, reason = self.score_window_cluster_against_task(cluster, task)
                 if score > best_score:
                     best_task = task
@@ -4640,12 +4749,18 @@ class PMECleaner:
 
         view_clusters = self.cluster_current_views_for_window_workstream(view_signatures)
         window_workstreams = self.load_existing_window_workstreams(cursor)
+        primary_match_since = self.get_workstream_primary_match_since(window_cfg)
         touched_workstreams = set()
         for view_cluster in view_clusters:
             best_workstream = None
             best_score = 0.0
             best_reason = None
-            for workstream in window_workstreams:
+            workstream_candidates = self.filter_window_workstream_candidates(
+                view_cluster,
+                window_workstreams,
+                primary_match_since,
+            )
+            for workstream in workstream_candidates:
                 score, reason = self.score_view_cluster_against_window_workstream(view_cluster, workstream)
                 if score > best_score:
                     best_workstream = workstream
