@@ -4778,6 +4778,29 @@ class PMECleaner:
             "period_end": period_end,
         }
 
+    def get_manual_report_generation_period(self, cursor):
+        row = cursor.execute(
+            """
+            SELECT MIN(start_timestamp), MAX(end_timestamp)
+            FROM task_workstream
+            """
+        ).fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        period_start = to_db_timezone(row[0])
+        period_end = to_db_timezone(row[1])
+        if period_end <= period_start:
+            period_end = period_start + timedelta(seconds=1)
+        period_key = (
+            f"manual:{period_start.strftime('%Y-%m-%dT%H:%M:%S')}_"
+            f"{period_end.strftime('%Y-%m-%dT%H:%M:%S')}"
+        )
+        return {
+            "period_key": period_key,
+            "period_start": period_start,
+            "period_end": period_end,
+        }
+
     def load_report_task_profile(self, cursor, task_workstream_id):
         row = cursor.execute(
             """
@@ -5276,8 +5299,14 @@ class PMECleaner:
         if not report_cfg.get("enabled", False):
             return self.get_report_block_stats(output_conn, skipped_reason="disabled")
         cursor = output_conn.cursor()
-        period = self.get_report_latest_generation_period()
-        task_workstream_ids = self.load_active_task_workstream_ids_for_report_period(cursor, period)
+        if str(report_cfg.get("trigger_mode", "periodic")).lower() == "manual":
+            period = self.get_manual_report_generation_period(cursor)
+            if not period:
+                return self.get_report_block_stats(output_conn, skipped_reason="no_task_workstreams")
+            task_workstream_ids = self.load_all_task_workstream_ids_for_report(cursor)
+        else:
+            period = self.get_report_latest_generation_period()
+            task_workstream_ids = self.load_active_task_workstream_ids_for_report_period(cursor, period)
         if not task_workstream_ids:
             return self.get_report_block_stats(output_conn, skipped_reason="no_active_tasks")
         if (
@@ -5348,6 +5377,16 @@ class PMECleaner:
         if skipped_reason:
             stats["report_block_skipped_reason"] = skipped_reason
         return stats
+
+    def load_all_task_workstream_ids_for_report(self, cursor):
+        rows = cursor.execute(
+            """
+            SELECT id
+            FROM task_workstream
+            ORDER BY start_timestamp ASC, id ASC
+            """
+        ).fetchall()
+        return [row[0] for row in rows if row[0] is not None]
 
     def load_active_task_workstream_ids_for_report_period(self, cursor, period):
         period_start = format_db_timestamp(period["period_start"])
