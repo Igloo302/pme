@@ -29,7 +29,8 @@ ENV/
 # Logs
 *.log
 *.err
-
+*.json
+*.txt
 # Environment variables
 .env
 .env.local
