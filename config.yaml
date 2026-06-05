@@ -8,10 +8,10 @@
 # --- Database Paths ---
 database:
   # Where Screenpipe stores its SQLite database
-  screenpipe_db: "/Users/zhouboyu/Documents/xreal/pme/db.sqlite"
+  screenpipe_db: "/Users/zhouboyu/Documents/xreal/pme/screenpipe.sqlite"
 
   # Where OpenChronicle stores its SQLite database
-  openchronicle_db: ""
+  openchronicle_db: "/Users/zhouboyu/Documents/xreal/pme/openchronicle.db"
   
   # Where PME writes the cleaned, deduplicated output database
   # This is the file you'll use for RAG / Q&A queries
@@ -35,6 +35,9 @@ screenpipe:
 openchronicle:
   # Full path to the openchronicle binary
   bin_path: "~/.local/bin/openchronicle"
+  # Link AXTree captures to nearby Screenpipe records within this many seconds.
+  record_link_window_seconds: 6
+  max_events_per_record: 3
 
 # --- PME Cleaning Policy ---
 # Controls how often OCR snapshots are kept per window state.
@@ -95,15 +98,15 @@ segment_generation:
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 10
+  llm_budget: 1
   llm_timeout: 60
 
 # --- Cross-time Window Workstream Reconstruction ---
 # Groups related views across non-continuous time ranges within a work context.
 window_workstream_generation:
   enabled: true
-  # Enable one LLM summary update per changed workstream after all views in the current batch are matched.
-  enable_LLM_summary: true
+  # Optional. Keep false to avoid LLM calls during routine view-to-workstream matching.
+  enable_LLM_summary: false
   min_relevance: 0.35
   title_similarity_threshold: 0.82
   max_member_views_for_matching: 12
@@ -117,19 +120,47 @@ window_workstream_generation:
   cluster_merge_support_ratio: 0.5
   cluster_merge_min_score: 0.35
   max_time_gap_days: 30
+  primary_match_since: current_week
+  historical_min_entity_overlap: 2
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 20
+  llm_budget: 1
+  llm_timeout: 60
+
+# --- Screen Memory Fact/Observation Generation ---
+# Converts view-level screen evidence into screen_facts, then consolidates related
+# facts inside each window_workstream into screen_observations for weekly reports.
+screen_memory_generation:
+  enabled: true
+  enable_LLM_fact_extraction: true
+  enable_observation_generation: true
+  enable_LLM_observation: true
+  fallback_fact_when_llm_fails: false
+  fallback_observation_without_llm: true
+  min_facts_per_observation: 1
+  fact_cluster_min_score: 0.42
+  observation_merge_fact_min_score: 0.42
+  observation_merge_min_score: 0.48
+  observation_merge_support_ratio: 0.5
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  fact_llm_budget: 50
+  observation_llm_budget: 50
   llm_timeout: 60
 
 # --- Cross-window Task Workstream Reconstruction ---
 # Groups related window_workstream rows into task-level workstreams across apps/windows.
 task_workstream_generation:
   enabled: true
-  # Enable one LLM summary update per changed task_workstream after window_workstream matching finishes.
-  enable_LLM_summary: true
+  # Optional. Keep false when report_block_generation is the main LLM summarization layer.
+  enable_LLM_summary: false
   min_relevance: 0.35
+  title_similarity_threshold: 0.55
+  title_topic_min_score: 0.20
+  title_entity_min_score: 0.10
+  title_text_min_score: 0.12
   semantic_similarity_threshold: 0.28
   entity_text_min_score: 0.06
   max_member_window_workstreams_for_matching: 12
@@ -140,10 +171,32 @@ task_workstream_generation:
   min_top_k_avg: 0.50
   cluster_seed_min_score: 0.55
   max_time_gap_days: 30
+  primary_match_since: current_week
+  historical_min_entity_overlap: 2
+  historical_entity_text_min_score: 0.08
   llm_model: "deepseek-v4-flash"
   llm_base_url: "https://api.deepseek.com/v1"
   llm_api_key_env: "DEEPSEEK_API_KEY"
-  llm_budget: 20
+  llm_budget: 1
+  llm_timeout: 60
+
+# --- Periodic Report Block Generation ---
+# Creates one report-ready block per active task_workstream per report period.
+report_block_generation:
+  enabled: true
+  trigger_mode: manual
+  period: weekly
+  week_start_day: 0
+  generation_weekday: 0
+  generate_last_period: false
+  rerun_existing_periods: false
+  enable_LLM_summary: true
+  refresh_existing_llm: false
+  max_views_for_summary: 40
+  llm_model: "deepseek-v4-flash"
+  llm_base_url: "https://api.deepseek.com/v1"
+  llm_api_key_env: "DEEPSEEK_API_KEY"
+  llm_budget: 50
   llm_timeout: 60
 
 # --- Web UI ---
