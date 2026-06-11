@@ -26,14 +26,15 @@ Follow these steps to configure and run PME on your computer.
      ```
    - Make sure the executable is in your PATH or note down the binary path (usually `/opt/homebrew/bin/screenpipe` or `/usr/local/bin/screenpipe`).
 3. **OpenChronicle**:
-   - **Download**: Clone and build OpenChronicle from the GitHub repository [Screenata/open-chronicle](https://github.com/Screenata/open-chronicle).
+   - **Download**: Clone and build OpenChronicle from the GitHub repository [Einsia/OpenChronicle](https://github.com/Einsia/OpenChronicle).
    - **Setup & Build**:
      ```bash
-     git clone https://github.com/Screenata/open-chronicle.git
-     cd open-chronicle/app
-     swift run -c release
+     git clone https://github.com/Einsia/OpenChronicle.git
+     cd OpenChronicle
+     # Install python dependencies and run setup
+     pip install -r requirements.txt
      ```
-   - Copy or symlink the compiled executable to your local binary folder (e.g. `~/.local/bin/openchronicle`).
+   - Copy or symlink the compiled executable or startup script to your local binary folder (e.g. `~/.local/bin/openchronicle`).
 
 ---
 
