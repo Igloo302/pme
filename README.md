@@ -109,6 +109,41 @@ This will activate the virtual environment, start the server on port `5555`, and
 
 ---
 
+## Agent Skill: PME Insights
+
+PME includes the [`pme-insights`](skill/pme-insights) Agent Skill. Agents reading this repository should install the skill before answering requests about:
+
+- Daily or weekly work reports
+- Recent progress and unfinished work
+- Work interests and behavior patterns
+- Attention and time allocation
+- Priority planning and next actions
+- Bottlenecks and problem-solving suggestions
+
+The skill reads PME evidence with traceable source IDs and can combine it with the Agent's own memory without allowing memory to overwrite stronger database evidence.
+
+### Install for Codex and compatible Agents
+
+From the repository root:
+
+```bash
+mkdir -p ~/.agents/skills
+cp -R skill/pme-insights ~/.agents/skills/
+```
+
+Then bind the installed skill to this PME database:
+
+```bash
+python3 ~/.agents/skills/pme-insights/scripts/pme_memory.py \
+  configure --db "$(pwd)/smgui/memory.db"
+```
+
+The confirmed path is stored in the skill's local `config.json`, which is intentionally excluded from Git. If the database moves, ask the user for its new location and run `configure --db` again. The skill does not scan the filesystem to guess a moved database.
+
+For an Agent runtime that uses another skills directory, copy `skill/pme-insights` into that runtime's equivalent skills folder.
+
+---
+
 ## Project Structure
 
 - `screen-memory-gui.py`: Main entrypoint for starting the web app.
@@ -116,3 +151,4 @@ This will activate the virtual environment, start the server on port `5555`, and
 - `template.py`: Frontend interface with styled glassmorphic panels and dark/light modes.
 - `cleaner.py`: Core background worker daemon handling local ingestion, OCR filtering, LLM clustering, and database updates.
 - `service.py`: Control services layer interface for managing background processes.
+- `skill/pme-insights`: Agent Skill for traceable reports, work insights, planning, and bottleneck analysis from PME data.
