@@ -1,0 +1,23 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+
+# Project databases and local state (private data)
+smgui/memory.db
+smgui/schedule_state.json
+smgui/.pipeline.lock
+smgui/config.yaml
+schedule_state.json
+.pipeline.lock
+
+# Log files
+*.log
+/tmp/screenpipe_*.err

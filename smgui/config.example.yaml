@@ -1,0 +1,21 @@
+database:
+  cleaned_db: smgui/memory.db
+  openchronicle_db: ~/.openchronicle/index.db
+  screenpipe_db: ~/.screenpipe/db.sqlite
+model:
+  api_key: ""
+  base_url: https://openrouter.ai/api/v1
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  provider: openrouter
+  temperature: 0.2
+openchronicle:
+  bin_path: /Users/jyshen/.local/bin/openchronicle
+screen_memory:
+  enabled: true
+  fact_clustering_interval_hours: 1
+  ingest_interval_minutes: 5
+  observation_interval_hours: 3
+screenpipe:
+  api_token: ''
+  api_url: http://localhost:3030
+  bin_path: /opt/homebrew/bin/screenpipe

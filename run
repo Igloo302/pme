@@ -1,0 +1,16 @@
+#!/bin/bash
+# MacOS Executable Launcher for Screen Memory GUI
+
+# Get the directory of the current script
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+echo "🚀 Launching Screen Memory GUI..."
+
+# Check if local venv exists
+if [ -d "venv" ]; then
+    source venv/bin/activate
+    python screen-memory-gui.py
+else
+    python3 screen-memory-gui.py
+fi
