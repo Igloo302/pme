@@ -1,0 +1,4 @@
+interface:
+  display_name: "PME Insights"
+  short_description: "Generate traceable work reports and personal insights from PME"
+  default_prompt: "Use $pme-insights to summarize my recent work and identify the most important next step."
