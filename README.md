@@ -19,7 +19,7 @@ Follow these steps to configure and run PME on your computer.
 
 1. **Python 3.10+**
 2. **Screenpipe**:
-   - **Download**: Get the desktop app or CLI binary from the [Official Screenpipe Website](https://screenpi.pe) or [mediar-ai/screenpipe](https://github.com/mediar-ai/screenpipe) on GitHub.
+   - **Download**: Get the desktop app or CLI binary from the [Official Screenpipe Website](https://screenpi.pe) or [screenpipe/screenpipe](https://github.com/screenpipe/screenpipe) on GitHub.
    - **macOS Install**: Alternatively, install via Homebrew:
      ```bash
      brew install screenpipe
