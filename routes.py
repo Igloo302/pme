@@ -55,9 +55,18 @@ def register_routes(app):
                 except Exception:
                     pass
 
+            cfg = get_pme_config()
+            sp_cfg = cfg.get("screenpipe", {})
+            bin_path = os.path.expanduser(sp_cfg.get("bin_path") or "/opt/homebrew/bin/screenpipe")
+            use_audio = sp_cfg.get("use_audio", True)
+
+            cmd = [bin_path, "record"]
+            if not use_audio:
+                cmd.append("--disable-audio")
+
             with open(err_log_path, "w") as err_file:
                 proc = subprocess.Popen(
-                    ["/opt/homebrew/bin/screenpipe", "record", "--disable-audio"],
+                    cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=err_file,
                 )
@@ -109,9 +118,13 @@ def register_routes(app):
                 except Exception:
                     pass
 
+            cfg = get_pme_config()
+            sp_cfg = cfg.get("screenpipe", {})
+            bin_path = os.path.expanduser(sp_cfg.get("bin_path") or "/opt/homebrew/bin/screenpipe")
+
             with open(err_log_path, "w") as err_file:
                 proc = subprocess.Popen(
-                    ["/opt/homebrew/bin/screenpipe", "record", "--disable-audio", "--fps", "0"],
+                    [bin_path, "record", "--disable-audio", "--fps", "0"],
                     stdout=subprocess.DEVNULL,
                     stderr=err_file,
                 )
@@ -890,8 +903,11 @@ def get_pme_config():
         screenpipe = {
             "bin_path": "/opt/homebrew/bin/screenpipe",
             "api_url": "http://localhost:3030",
-            "api_token": ""
+            "api_token": "",
+            "use_audio": True
         }
+    elif "use_audio" not in screenpipe:
+        screenpipe["use_audio"] = True
         
     openchronicle = data.get("openchronicle", {})
     if not openchronicle:

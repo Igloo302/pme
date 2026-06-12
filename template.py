@@ -1202,6 +1202,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                                 <input type="password" id="cfg-sp-token" placeholder="Automatically detected" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);">
                             </div>
                         </div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                            <input type="checkbox" id="cfg-sp-use-audio" style="width: 16px; height: 16px; border-radius: 4px; accent-color: var(--accent); cursor: pointer;">
+                            <label style="font-size: 13px; font-weight: 500; color: var(--text-primary); cursor: pointer;" for="cfg-sp-use-audio" id="lbl-cfg-sp-use-audio">Enable Audio Recording</label>
+                        </div>
                     </div>
                 </div>
 
@@ -1293,7 +1297,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'pme.lbl_emb_model': 'Model Name',
                 'pme.lbl_emb_url': 'Base URL (Optional)',
                 'pme.lbl_emb_key_env': 'API Key Env Var',
-                'pme.lbl_emb_key': 'API Key'
+                'pme.lbl_emb_key': 'API Key',
+                'pme.lbl_sp_use_audio': 'Enable Audio Recording'
             },
             zh: {
                 'header.title': 'Personal Memory Engine',
@@ -1372,7 +1377,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'pme.lbl_emb_model': '模型名称',
                 'pme.lbl_emb_url': 'API 基础地址 (可选)',
                 'pme.lbl_emb_key_env': 'API Key 环境变量',
-                'pme.lbl_emb_key': 'API Key'
+                'pme.lbl_emb_key': 'API Key',
+                'pme.lbl_sp_use_audio': '启用录音与自动转录'
             }
         };
 
@@ -1420,7 +1426,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'lbl-cfg-emb-model': 'pme.lbl_emb_model',
                 'lbl-cfg-emb-url': 'pme.lbl_emb_url',
                 'lbl-cfg-emb-key-env': 'pme.lbl_emb_key_env',
-                'lbl-cfg-emb-key': 'pme.lbl_emb_key'
+                'lbl-cfg-emb-key': 'pme.lbl_emb_key',
+                'lbl-cfg-sp-use-audio': 'pme.lbl_sp_use_audio'
             };
             for (var elId in map) {
                 var el = document.getElementById(elId);
@@ -2232,6 +2239,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('cfg-oc-bin').value = oc.bin_path || '';
                     document.getElementById('cfg-sp-url').value = sp.api_url || '';
                     document.getElementById('cfg-sp-token').value = sp.api_token || '';
+                    document.getElementById('cfg-sp-use-audio').checked = sp.use_audio !== false;
                 })
                 .catch(function(err) { console.error('Failed to load PME config:', err); });
         }
@@ -2268,7 +2276,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 screenpipe: {
                     bin_path: document.getElementById('cfg-sp-bin').value,
                     api_url: document.getElementById('cfg-sp-url').value,
-                    api_token: document.getElementById('cfg-sp-token').value
+                    api_token: document.getElementById('cfg-sp-token').value,
+                    use_audio: document.getElementById('cfg-sp-use-audio').checked
                 },
                 openchronicle: {
                     bin_path: document.getElementById('cfg-oc-bin').value

@@ -28,3 +28,4 @@ screenpipe:
   api_token: ''
   api_url: http://localhost:3030
   bin_path: /opt/homebrew/bin/screenpipe
+  use_audio: true
