@@ -2,6 +2,15 @@ database:
   cleaned_db: smgui/memory.db
   openchronicle_db: ~/.openchronicle/index.db
   screenpipe_db: ~/.screenpipe/db.sqlite
+embedding:
+  enabled: false
+  provider: openai
+  model: text-embedding-3-small
+  base_url: https://openrouter.ai/api/v1
+  api_key: ""
+  api_key_env: EMBEDDING_API_KEY
+  dimensions: 1536
+  normalize: true
 model:
   api_key: ""
   base_url: https://openrouter.ai/api/v1

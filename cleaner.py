@@ -122,9 +122,19 @@ def load_screen_memory_config():
         },
         "embedding": {
             "enabled": False,
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
             "api_key_env": "EMBEDDING_API_KEY",
+            "dimensions": 1536,
+            "normalize": True,
         }
     }
+    
+    embedding_settings = yaml_data.get("embedding")
+    if isinstance(embedding_settings, dict):
+        config["embedding"].update(embedding_settings)
     
     model_settings = yaml_data.get('model', {})
     llm_model = model_settings.get('model')
