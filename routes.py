@@ -918,12 +918,26 @@ def get_pme_config():
             "temperature": 0.2
         }
 
+    embedding = data.get("embedding", {})
+    if not embedding:
+        embedding = {
+            "enabled": False,
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "api_key_env": "EMBEDDING_API_KEY",
+            "dimensions": 1536,
+            "normalize": True
+        }
+
     return {
         "database": database,
         "screenpipe": screenpipe,
         "openchronicle": openchronicle,
         "screen_memory": screen_memory,
-        "model": model
+        "model": model,
+        "embedding": embedding
     }
 
 def test_llm_connection(model_cfg):
@@ -979,7 +993,7 @@ def save_pme_config(new_config):
             data = {}
 
         # Merge key sections
-        for section in ["database", "screenpipe", "openchronicle", "screen_memory", "model"]:
+        for section in ["database", "screenpipe", "openchronicle", "screen_memory", "model", "embedding"]:
             if section in new_config and isinstance(new_config[section], dict):
                 if section not in data or not isinstance(data[section], dict):
                     data[section] = {}

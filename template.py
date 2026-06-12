@@ -1099,6 +1099,62 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <!-- Group 2.5: AI Embedding Settings -->
+                <div class="status-card">
+                    <h3 style="font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; color: var(--accent);">
+                        🧩 <span id="lbl-cfg-section-emb">AI Embedding Settings</span>
+                    </h3>
+                    <div style="display: flex; flex-direction: column; gap: 16px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: center;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <input type="checkbox" id="cfg-emb-enabled" style="width: 16px; height: 16px; border-radius: 4px; accent-color: var(--accent); cursor: pointer;">
+                                <label style="font-size: 13px; font-weight: 500; color: var(--text-primary); cursor: pointer;" for="cfg-emb-enabled" id="lbl-cfg-emb-enabled">Enable Embedding</label>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; align-items: center;">
+                                <div style="display: flex; align-items: center; gap: 6px;">
+                                    <label style="font-size: 13px; font-weight: 500; color: var(--text-secondary); white-space: nowrap;" id="lbl-cfg-emb-dimensions">Dimensions</label>
+                                    <input type="number" id="cfg-emb-dimensions" style="width: 100%; padding: 6px 10px; font-size: 12px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);" placeholder="1536">
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px; justify-content: flex-end;">
+                                    <input type="checkbox" id="cfg-emb-normalize" style="width: 14px; height: 14px; accent-color: var(--accent); cursor: pointer;">
+                                    <label style="font-size: 13px; font-weight: 500; color: var(--text-secondary); cursor: pointer;" for="cfg-emb-normalize" id="lbl-cfg-emb-normalize">Normalize</label>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                            <div>
+                                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary);" id="lbl-cfg-emb-provider">Provider</label>
+                                <select id="cfg-emb-provider" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);">
+                                    <option value="openai">openai</option>
+                                    <option value="openrouter">openrouter</option>
+                                    <option value="custom">custom</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary);" id="lbl-cfg-emb-model">Model Name</label>
+                                <input type="text" id="cfg-emb-model" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);" placeholder="text-embedding-3-small">
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1.8fr 1.2fr; gap: 16px;">
+                            <div>
+                                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary);" id="lbl-cfg-emb-url">Base URL (Optional)</label>
+                                <input type="text" id="cfg-emb-url" placeholder="https://api.openai.com/v1" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);">
+                            </div>
+                            <div>
+                                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary);" id="lbl-cfg-emb-key-env">API Key Env Var</label>
+                                <input type="text" id="cfg-emb-key-env" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);" placeholder="EMBEDDING_API_KEY">
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-secondary);" id="lbl-cfg-emb-key">API Key</label>
+                            <input type="password" id="cfg-emb-key" placeholder="••••••••••••••••" style="width: 100%; padding: 8px 12px; font-size: 13px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--search-bg); color: var(--text-primary);">
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Group 3: PME Auto-Cleaning Schedule -->
                 <div class="status-card">
                     <h3 style="font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; color: var(--accent);">
@@ -1228,7 +1284,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'lbl.clean_phase': 'Cleaning Phase',
                 'btn.trigger_manual_clean': 'Clean Now',
                 'lbl.manual_status_title': 'Cleaning Progress',
-                'lbl.pme_title': 'Personal Memory Engine'
+                'lbl.pme_title': 'Personal Memory Engine',
+                'pme.emb_settings_title': 'AI Embedding Settings',
+                'pme.lbl_emb_enabled': 'Enable Embedding',
+                'pme.lbl_emb_dimensions': 'Dimensions:',
+                'pme.lbl_emb_normalize': 'Normalize',
+                'pme.lbl_emb_provider': 'Provider',
+                'pme.lbl_emb_model': 'Model Name',
+                'pme.lbl_emb_url': 'Base URL (Optional)',
+                'pme.lbl_emb_key_env': 'API Key Env Var',
+                'pme.lbl_emb_key': 'API Key'
             },
             zh: {
                 'header.title': 'Personal Memory Engine',
@@ -1298,7 +1363,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'lbl.clean_phase': '清洗步骤',
                 'btn.trigger_manual_clean': '开始清洗',
                 'lbl.manual_status_title': '清洗进度',
-                'lbl.pme_title': 'Personal Memory Engine'
+                'lbl.pme_title': 'Personal Memory Engine',
+                'pme.emb_settings_title': 'AI Embedding 配置',
+                'pme.lbl_emb_enabled': '启用 Embedding',
+                'pme.lbl_emb_dimensions': '维度:',
+                'pme.lbl_emb_normalize': '归一化',
+                'pme.lbl_emb_provider': '服务商',
+                'pme.lbl_emb_model': '模型名称',
+                'pme.lbl_emb_url': 'API 基础地址 (可选)',
+                'pme.lbl_emb_key_env': 'API Key 环境变量',
+                'pme.lbl_emb_key': 'API Key'
             }
         };
 
@@ -1337,7 +1411,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 'lbl-clean-phase': 'lbl.clean_phase',
                 'btn-trigger-manual-clean': 'btn.trigger_manual_clean',
                 'lbl-manual-status-title': 'lbl.manual_status_title',
-                'lbl-pme-title': 'lbl.pme_title'
+                'lbl-pme-title': 'lbl.pme_title',
+                'lbl-cfg-section-emb': 'pme.emb_settings_title',
+                'lbl-cfg-emb-enabled': 'pme.lbl_emb_enabled',
+                'lbl-cfg-emb-dimensions': 'pme.lbl_emb_dimensions',
+                'lbl-cfg-emb-normalize': 'pme.lbl_emb_normalize',
+                'lbl-cfg-emb-provider': 'pme.lbl_emb_provider',
+                'lbl-cfg-emb-model': 'pme.lbl_emb_model',
+                'lbl-cfg-emb-url': 'pme.lbl_emb_url',
+                'lbl-cfg-emb-key-env': 'pme.lbl_emb_key_env',
+                'lbl-cfg-emb-key': 'pme.lbl_emb_key'
             };
             for (var elId in map) {
                 var el = document.getElementById(elId);
@@ -2120,6 +2203,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     var oc = config.openchronicle || {};
                     var sm = config.screen_memory || {};
                     var llm = config.model || {};
+                    var emb = config.embedding || {};
 
                     document.getElementById('cfg-sp-db').value = db.screenpipe_db || '';
                     document.getElementById('cfg-oc-db').value = db.openchronicle_db || '';
@@ -2130,6 +2214,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     document.getElementById('cfg-llm-url').value = llm.base_url || '';
                     document.getElementById('cfg-llm-temp').value = llm.temperature !== undefined ? llm.temperature : 0.2;
                     document.getElementById('cfg-llm-key').value = llm.api_key || '';
+
+                    document.getElementById('cfg-emb-enabled').checked = !!emb.enabled;
+                    document.getElementById('cfg-emb-provider').value = emb.provider || 'openai';
+                    document.getElementById('cfg-emb-model').value = emb.model || '';
+                    document.getElementById('cfg-emb-url').value = emb.base_url || '';
+                    document.getElementById('cfg-emb-key-env').value = emb.api_key_env || 'EMBEDDING_API_KEY';
+                    document.getElementById('cfg-emb-key').value = emb.api_key || '';
+                    document.getElementById('cfg-emb-dimensions').value = emb.dimensions !== undefined ? emb.dimensions : 1536;
+                    document.getElementById('cfg-emb-normalize').checked = emb.normalize !== false;
 
                     document.getElementById('pme-ingest-interval').value = sm.ingest_interval_minutes || 30;
                     document.getElementById('pme-cluster-interval').value = sm.fact_clustering_interval_hours || 2;
@@ -2156,6 +2249,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     base_url: document.getElementById('cfg-llm-url').value,
                     temperature: parseFloat(document.getElementById('cfg-llm-temp').value) || 0.2,
                     api_key: document.getElementById('cfg-llm-key').value
+                },
+                embedding: {
+                    enabled: document.getElementById('cfg-emb-enabled').checked,
+                    provider: document.getElementById('cfg-emb-provider').value,
+                    model: document.getElementById('cfg-emb-model').value,
+                    base_url: document.getElementById('cfg-emb-url').value,
+                    api_key_env: document.getElementById('cfg-emb-key-env').value || 'EMBEDDING_API_KEY',
+                    api_key: document.getElementById('cfg-emb-key').value,
+                    dimensions: parseInt(document.getElementById('cfg-emb-dimensions').value) || 1536,
+                    normalize: document.getElementById('cfg-emb-normalize').checked
                 },
                 screen_memory: {
                     ingest_interval_minutes: parseInt(document.getElementById('pme-ingest-interval').value) || 30,
