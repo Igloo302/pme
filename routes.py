@@ -60,6 +60,30 @@ def register_routes(app):
             bin_path = os.path.expanduser(sp_cfg.get("bin_path") or "/opt/homebrew/bin/screenpipe")
             use_audio = sp_cfg.get("use_audio", True)
 
+            # Sync setting to ~/.screenpipe/store.bin to override internal Tauri config
+            try:
+                store_dir = os.path.expanduser("~/.screenpipe")
+                os.makedirs(store_dir, exist_ok=True)
+                store_path = os.path.join(store_dir, "store.bin")
+                
+                store_data = {}
+                if os.path.exists(store_path):
+                    try:
+                        with open(store_path, "r") as f:
+                            store_data = json.load(f)
+                    except Exception:
+                        pass
+                
+                if "settings" not in store_data or not isinstance(store_data["settings"], dict):
+                    store_data["settings"] = {}
+                
+                store_data["settings"]["disableAudio"] = not use_audio
+                
+                with open(store_path, "w") as f:
+                    json.dump(store_data, f, indent=2)
+            except Exception as e:
+                print(f"Error syncing PME use_audio to Screenpipe store.bin: {e}")
+
             cmd = [bin_path, "record"]
             if not use_audio:
                 cmd.append("--disable-audio")
