@@ -2,48 +2,128 @@
 
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import time
 import json
 import threading
+import urllib.parse
 from datetime import datetime, timedelta
 from collections import defaultdict
 
 import requests as req
 from flask import jsonify, request
 
-from smgui.config import (
-    SCREENPIPE_API,
-    OPENCHRONICLE_BIN,
-    SCREENPIPE_DATA,
-    OPENCHRONICLE_DATA,
-    SCREENPIPE_DB,
-    OPENCHRONICLE_DB,
-    SCREENPIPE_PIPES_DIR,
+from screen_memory.config import (
     CONFIG_PATH,
+    load_gui_config,
     OUTPUT_DB,
+    PROJECT_ROOT,
+    resolve_api_key,
 )
 
 
 def register_routes(app):
     """Register all Flask routes on the given app instance."""
 
+    def get_openchronicle_bin():
+        cfg = get_pme_config()
+        configured = (cfg.get("openchronicle", {}) or {}).get("bin_path")
+        if configured:
+            return os.path.expanduser(str(configured))
+        return shutil.which("openchronicle") or os.path.expanduser("~/.local/bin/openchronicle")
+
+    def get_screenpipe_cfg():
+        return get_pme_config().get("screenpipe", {}) or {}
+
+    def get_screenpipe_api():
+        return str(get_screenpipe_cfg().get("api_url") or "http://localhost:3030").rstrip("/")
+
+    def is_screenpipe_running():
+        try:
+            response = req.get(f"{get_screenpipe_api()}/health", timeout=2)
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    def get_screenpipe_data_dir():
+        cfg = get_screenpipe_cfg()
+        data_dir = cfg.get("data_dir")
+        if data_dir:
+            return os.path.expanduser(str(data_dir))
+        db_path = get_pme_config().get("database", {}).get("screenpipe_db")
+        if db_path:
+            return os.path.dirname(os.path.expanduser(str(db_path)))
+        return os.path.expanduser("~/.screenpipe")
+
+    def get_screenpipe_pipes_dir():
+        cfg = get_screenpipe_cfg()
+        pipes_dir = cfg.get("pipes_dir")
+        if pipes_dir:
+            return os.path.expanduser(str(pipes_dir))
+        return os.path.join(get_screenpipe_data_dir(), "pipes")
+
+    def get_screenpipe_bin():
+        configured = get_screenpipe_cfg().get("bin_path")
+        if configured:
+            return os.path.expanduser(str(configured))
+        return shutil.which("screenpipe") or "/opt/homebrew/bin/screenpipe"
+
+    def get_screenpipe_port():
+        parsed = urllib.parse.urlparse(get_screenpipe_api())
+        return parsed.port
+
+    def build_screenpipe_command(*, recording=True, use_audio=True):
+        cmd = [get_screenpipe_bin()]
+        data_dir = get_screenpipe_data_dir()
+        if data_dir:
+            cmd.extend(["--data-dir", data_dir])
+        port = get_screenpipe_port()
+        if port:
+            cmd.extend(["--port", str(port)])
+        if not recording:
+            cmd.extend(["--disable-audio", "--disable-vision", "--fps", "0"])
+        elif not use_audio:
+            cmd.append("--disable-audio")
+        return cmd
+
+    def screenpipe_error_is_audio_related(error_text):
+        lowered = (error_text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "cpal",
+                "screencapturekit",
+                "audio",
+                "vad",
+                "whisper",
+                "protobuf parsing failed",
+                "wespeaker",
+            )
+        )
+
+    def get_openchronicle_data_dir():
+        cfg = get_pme_config().get("openchronicle", {}) or {}
+        data_dir = cfg.get("data_dir")
+        if data_dir:
+            return os.path.expanduser(str(data_dir))
+        db_path = get_pme_config().get("database", {}).get("openchronicle_db")
+        if db_path:
+            return os.path.dirname(os.path.expanduser(str(db_path)))
+        return os.path.expanduser("~/.openchronicle")
+
     # ── Screenpipe routes ──────────────────────────────────────────
 
     @app.route("/")
     def index():
-        from smgui.template import HTML_TEMPLATE
+        from template import HTML_TEMPLATE
         from flask import render_template_string
         return render_template_string(HTML_TEMPLATE)
 
     @app.route("/api/screenpipe/status")
     def screenpipe_status():
-        try:
-            response = req.get(f"{SCREENPIPE_API}/health", timeout=2)
-            return jsonify({"running": response.status_code == 200})
-        except Exception:
-            return jsonify({"running": False})
+        return jsonify({"running": is_screenpipe_running()})
 
     @app.route("/api/screenpipe/start", methods=["POST"])
     def screenpipe_start():
@@ -54,15 +134,16 @@ def register_routes(app):
                     os.remove(err_log_path)
                 except Exception:
                     pass
+            if is_screenpipe_running():
+                return jsonify({"message": "Screenpipe is already running."})
 
             cfg = get_pme_config()
             sp_cfg = cfg.get("screenpipe", {})
-            bin_path = os.path.expanduser(sp_cfg.get("bin_path") or "/opt/homebrew/bin/screenpipe")
             use_audio = sp_cfg.get("use_audio", True)
 
             # Sync setting to ~/.screenpipe/store.bin to override internal Tauri config
             try:
-                store_dir = os.path.expanduser("~/.screenpipe")
+                store_dir = get_screenpipe_data_dir()
                 os.makedirs(store_dir, exist_ok=True)
                 store_path = os.path.join(store_dir, "store.bin")
                 
@@ -84,9 +165,7 @@ def register_routes(app):
             except Exception as e:
                 print(f"Error syncing PME use_audio to Screenpipe store.bin: {e}")
 
-            cmd = [bin_path, "record"]
-            if not use_audio:
-                cmd.append("--disable-audio")
+            cmd = build_screenpipe_command(recording=True, use_audio=use_audio)
 
             with open(err_log_path, "w") as err_file:
                 proc = subprocess.Popen(
@@ -120,6 +199,21 @@ def register_routes(app):
                         )
                     })
                 else:
+                    if use_audio and screenpipe_error_is_audio_related(err_content):
+                        with open(err_log_path, "a") as err_file:
+                            err_file.write("\nRetrying with --disable-audio after audio-related Screenpipe failure.\n")
+                            proc = subprocess.Popen(
+                                build_screenpipe_command(recording=True, use_audio=False),
+                                stdout=subprocess.DEVNULL,
+                                stderr=err_file,
+                            )
+                        time.sleep(1.5)
+                        if proc.poll() is None:
+                            return jsonify({
+                                "message": (
+                                    "Screenpipe started without audio after the audio capture backend failed."
+                                )
+                            })
                     return jsonify({
                         "message": f"Error: Screenpipe failed to start.\nDetails: {err_content[:200]}"
                     })
@@ -142,13 +236,9 @@ def register_routes(app):
                 except Exception:
                     pass
 
-            cfg = get_pme_config()
-            sp_cfg = cfg.get("screenpipe", {})
-            bin_path = os.path.expanduser(sp_cfg.get("bin_path") or "/opt/homebrew/bin/screenpipe")
-
             with open(err_log_path, "w") as err_file:
                 proc = subprocess.Popen(
-                    [bin_path, "record", "--disable-audio", "--fps", "0"],
+                    build_screenpipe_command(recording=False),
                     stdout=subprocess.DEVNULL,
                     stderr=err_file,
                 )
@@ -201,7 +291,7 @@ def register_routes(app):
         try:
             params = {"q": query, "content_type": content_type, "limit": 20}
             response = req.get(
-                f"{SCREENPIPE_API}/search", params=params, timeout=10
+                f"{get_screenpipe_api()}/search", params=params, timeout=10
             )
             if response.status_code == 200:
                 return jsonify(response.json())
@@ -213,15 +303,16 @@ def register_routes(app):
     def screenpipe_open_folder():
         try:
             import platform
-            if not os.path.exists(SCREENPIPE_DATA):
+            screenpipe_data = get_screenpipe_data_dir()
+            if not os.path.exists(screenpipe_data):
                 return jsonify({"error": "Data folder does not exist"})
             system = platform.system()
             if system == "Darwin":
-                subprocess.run(["open", SCREENPIPE_DATA])
+                subprocess.run(["open", screenpipe_data])
             elif system == "Windows":
-                subprocess.run(["explorer", SCREENPIPE_DATA])
+                subprocess.run(["explorer", screenpipe_data])
             else:
-                subprocess.run(["xdg-open", SCREENPIPE_DATA])
+                subprocess.run(["xdg-open", screenpipe_data])
             return jsonify({})
         except Exception as e:
             return jsonify({"error": str(e)})
@@ -231,8 +322,9 @@ def register_routes(app):
     @app.route("/api/openchronicle/status")
     def openchronicle_status():
         try:
+            openchronicle_bin = get_openchronicle_bin()
             result = subprocess.run(
-                [OPENCHRONICLE_BIN, "status"],
+                [openchronicle_bin, "status"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -263,8 +355,9 @@ def register_routes(app):
     @app.route("/api/openchronicle/start", methods=["POST"])
     def openchronicle_start():
         try:
+            openchronicle_bin = get_openchronicle_bin()
             subprocess.Popen(
-                [OPENCHRONICLE_BIN, "start"],
+                [openchronicle_bin, "start"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -276,7 +369,7 @@ def register_routes(app):
     @app.route("/api/openchronicle/stop", methods=["POST"])
     def openchronicle_stop():
         try:
-            subprocess.run([OPENCHRONICLE_BIN, "stop"], capture_output=True)
+            subprocess.run([get_openchronicle_bin(), "stop"], capture_output=True)
             time.sleep(1)
             return jsonify({"message": "OpenChronicle stopped!"})
         except Exception as e:
@@ -285,7 +378,7 @@ def register_routes(app):
     @app.route("/api/openchronicle/pause", methods=["POST"])
     def openchronicle_pause():
         try:
-            subprocess.run([OPENCHRONICLE_BIN, "pause"], capture_output=True)
+            subprocess.run([get_openchronicle_bin(), "pause"], capture_output=True)
             return jsonify({"message": "OpenChronicle paused!"})
         except Exception as e:
             return jsonify({"message": f"Error: {str(e)}"})
@@ -293,7 +386,7 @@ def register_routes(app):
     @app.route("/api/openchronicle/resume", methods=["POST"])
     def openchronicle_resume():
         try:
-            subprocess.run([OPENCHRONICLE_BIN, "resume"], capture_output=True)
+            subprocess.run([get_openchronicle_bin(), "resume"], capture_output=True)
             return jsonify({"message": "OpenChronicle resumed!"})
         except Exception as e:
             return jsonify({"message": f"Error: {str(e)}"})
@@ -436,15 +529,16 @@ def register_routes(app):
     def openchronicle_open_folder():
         try:
             import platform
-            if not os.path.exists(OPENCHRONICLE_DATA):
+            openchronicle_data = get_openchronicle_data_dir()
+            if not os.path.exists(openchronicle_data):
                 return jsonify({"error": "Data folder does not exist"})
             system = platform.system()
             if system == "Darwin":
-                subprocess.run(["open", OPENCHRONICLE_DATA])
+                subprocess.run(["open", openchronicle_data])
             elif system == "Windows":
-                subprocess.run(["explorer", OPENCHRONICLE_DATA])
+                subprocess.run(["explorer", openchronicle_data])
             else:
-                subprocess.run(["xdg-open", OPENCHRONICLE_DATA])
+                subprocess.run(["xdg-open", openchronicle_data])
             return jsonify({})
         except Exception as e:
             return jsonify({"error": str(e)})
@@ -562,7 +656,7 @@ def register_routes(app):
     @app.route("/api/screenpipe/pipes")
     def screenpipe_pipes():
         pipes = []
-        pipes_dir = SCREENPIPE_PIPES_DIR
+        pipes_dir = get_screenpipe_pipes_dir()
         if not os.path.isdir(pipes_dir):
             return jsonify([])
         for name in sorted(os.listdir(pipes_dir)):
@@ -596,7 +690,7 @@ def register_routes(app):
 
     @app.route("/api/screenpipe/pipes/<name>/enable", methods=["POST"])
     def screenpipe_pipe_enable(name):
-        pipe_path = os.path.join(SCREENPIPE_PIPES_DIR, name)
+        pipe_path = os.path.join(get_screenpipe_pipes_dir(), name)
         disabled_flag = os.path.join(pipe_path, ".disabled")
         if os.path.exists(disabled_flag):
             os.remove(disabled_flag)
@@ -604,7 +698,7 @@ def register_routes(app):
 
     @app.route("/api/screenpipe/pipes/<name>/disable", methods=["POST"])
     def screenpipe_pipe_disable(name):
-        pipe_path = os.path.join(SCREENPIPE_PIPES_DIR, name)
+        pipe_path = os.path.join(get_screenpipe_pipes_dir(), name)
         if os.path.isdir(pipe_path):
             disabled_flag = os.path.join(pipe_path, ".disabled")
             with open(disabled_flag, "w") as f:
@@ -824,7 +918,7 @@ def register_routes(app):
         time.sleep(5)
         while True:
             try:
-                from smgui.service import run_screen_memory_due_work
+                from screen_memory.service import run_screen_memory_due_work
                 cfg = get_pme_config()
                 is_enabled = cfg.get("screen_memory", {}).get("enabled", True)
                 if is_enabled:
@@ -853,7 +947,7 @@ pme_lock = threading.Lock()
 def run_pme_cleaner_job(phase=None, start_time_str=None, end_time_str=None):
     global pme_cleaner_state
     try:
-        from smgui.service import run_screen_memory_due_work
+        from screen_memory.service import run_screen_memory_due_work
         custom_start = None
         custom_end = None
         if start_time_str:
@@ -903,15 +997,7 @@ def run_pme_cleaner_job(phase=None, start_time_str=None, end_time_str=None):
             pme_cleaner_state["last_run_error"] = str(e)
 
 def get_pme_config():
-    import yaml
-    config_path = CONFIG_PATH
-    data = {}
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, 'r') as f:
-                data = yaml.safe_load(f) or {}
-        except Exception:
-            pass
+    data = load_gui_config()
 
     # Standard defaults matching the requirements
     database = data.get("database", {})
@@ -921,6 +1007,13 @@ def get_pme_config():
             "openchronicle_db": "~/.openchronicle/index.db",
             "cleaned_db": OUTPUT_DB
         }
+    else:
+        cleaned_db = database.get("cleaned_db")
+        if cleaned_db:
+            cleaned_path = os.path.expanduser(str(cleaned_db))
+            if not os.path.isabs(cleaned_path):
+                cleaned_path = os.path.join(str(PROJECT_ROOT), cleaned_path)
+            database["cleaned_db"] = cleaned_path
         
     screenpipe = data.get("screenpipe", {})
     if not screenpipe:
@@ -928,16 +1021,25 @@ def get_pme_config():
             "bin_path": "/opt/homebrew/bin/screenpipe",
             "api_url": "http://localhost:3030",
             "api_token": "",
+            "data_dir": "~/.screenpipe",
+            "pipes_dir": "~/.screenpipe/pipes",
             "use_audio": True
         }
     elif "use_audio" not in screenpipe:
         screenpipe["use_audio"] = True
+    if "data_dir" not in screenpipe:
+        screenpipe["data_dir"] = "~/.screenpipe"
+    if "pipes_dir" not in screenpipe:
+        screenpipe["pipes_dir"] = os.path.join(str(screenpipe["data_dir"]).rstrip("/"), "pipes")
         
     openchronicle = data.get("openchronicle", {})
     if not openchronicle:
         openchronicle = {
-            "bin_path": "/Users/jyshen/.local/bin/openchronicle"
+            "bin_path": shutil.which("openchronicle") or os.path.expanduser("~/.local/bin/openchronicle"),
+            "data_dir": "~/.openchronicle",
         }
+    if "data_dir" not in openchronicle:
+        openchronicle["data_dir"] = "~/.openchronicle"
         
     screen_memory = data.get("screen_memory", {})
     if not screen_memory:
@@ -955,8 +1057,11 @@ def get_pme_config():
             "model": "gpt-5.5",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "",
+            "api_key_env": "LLM_API_KEY",
             "temperature": 0.2
         }
+    elif "api_key_env" not in model:
+        model["api_key_env"] = "LLM_API_KEY"
 
     embedding = data.get("embedding", {})
     if not embedding:
@@ -987,7 +1092,8 @@ def test_llm_connection(model_cfg):
     provider = model_cfg.get("provider", "openai-codex")
     model = model_cfg.get("model", "")
     base_url = model_cfg.get("base_url", "")
-    api_key = model_cfg.get("api_key", "")
+    api_key = resolve_api_key(model_cfg, default_env="LLM_API_KEY")
+    api_key_env = str(model_cfg.get("api_key_env") or "LLM_API_KEY").strip()
     
     if not api_key and not model:
         return True, None
@@ -997,9 +1103,13 @@ def test_llm_connection(model_cfg):
         if is_local:
             api_key = "dummy"
         else:
-            api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+            api_key = (
+                os.environ.get(api_key_env)
+                or os.environ.get("OPENAI_API_KEY")
+                or os.environ.get("DEEPSEEK_API_KEY")
+            )
             if not api_key:
-                return False, "API key is missing"
+                return False, f"API key is missing; export {api_key_env} or set model.api_key"
                 
     if not base_url:
         if provider == "openai-codex":
@@ -1023,14 +1133,13 @@ def test_llm_connection(model_cfg):
         return False, str(e)
 
 def save_pme_config(new_config):
-    import yaml
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        yaml = None
     config_path = CONFIG_PATH
     try:
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                data = yaml.safe_load(f) or {}
-        else:
-            data = {}
+        data = load_gui_config()
 
         # Merge key sections
         for section in ["database", "screenpipe", "openchronicle", "screen_memory", "model", "embedding"]:
@@ -1041,13 +1150,28 @@ def save_pme_config(new_config):
                     data[section][k] = v
 
         with open(config_path, 'w') as f:
-            yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
+            if yaml is not None:
+                yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
+            else:
+                for section, values in data.items():
+                    f.write(f"{section}:\n")
+                    if isinstance(values, dict):
+                        for key, value in values.items():
+                            if value == "":
+                                formatted = "''"
+                            elif isinstance(value, bool):
+                                formatted = "true" if value else "false"
+                            else:
+                                formatted = str(value)
+                            f.write(f"  {key}: {formatted}\n")
+                    else:
+                        f.write(f"  value: {values}\n")
         return True
     except Exception:
         return False
 
 def get_schedule_state():
-    from smgui.config import SCHEDULE_STATE_PATH
+    from screen_memory.config import SCHEDULE_STATE_PATH
     if os.path.exists(SCHEDULE_STATE_PATH):
         try:
             with open(SCHEDULE_STATE_PATH, "r", encoding="utf-8") as f:
@@ -1055,4 +1179,3 @@ def get_schedule_state():
         except Exception:
             pass
     return {}
-

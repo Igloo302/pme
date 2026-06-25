@@ -12,6 +12,7 @@ __pycache__/
 
 # Project databases and local state (private data)
 smgui/memory.db
+smgui/memory.db-journal
 smgui/schedule_state.json
 smgui/.pipeline.lock
 smgui/config.yaml

@@ -5,16 +5,18 @@ Screen Memory GUI - Unified interface for Screenpipe and OpenChronicle
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT_DIR)
+sys.path.insert(0, os.path.join(ROOT_DIR, "src"))
+print()
 from flask import Flask
 import webbrowser
 
-from smgui.config import PORT
+from screen_memory.config import PORT
 
 app = Flask(__name__)
 
-from smgui.routes import register_routes  # noqa: E402
+from routes import register_routes  # noqa: E402
 register_routes(app)
 
 if __name__ == '__main__':
